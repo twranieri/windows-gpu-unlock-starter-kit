@@ -1,8 +1,10 @@
 # Windows GPU Unlock Starter Kit
 
-A guided preparation helper for the **pinned, experimental Windows GPU UNLOCK USB workflow**. Version 0.1.1.
+A guided preparation helper for the **pinned, experimental Windows GPU UNLOCK USB workflow**. Version 0.1.2.
 
 The helper finds your tools, Windows boot partition and eligible USB, checks readiness, and resumes the existing capture/build/test pipeline. Each PC gets its own locally generated profile. It does not turn an arbitrary RTX card into a supported configuration.
+
+**Check [the exact candidate PCI IDs and exclusions](COMPATIBILITY.md) before starting.** This kit is reusable across admitted machines and is not tied to the originating RTX 3090. It does not support every RTX 30-series card. RTX 3080 `2206`, for example, is outside the pinned LOCAL workflow.
 
 ## What you need
 
@@ -32,6 +34,8 @@ This obtains the exact Windows and firmware source revisions in `pinned-source.j
 ```
 
 Resolve the listed missing tools or settings. If Windows cannot read encryption or Secure Boot state without elevation, run this check from an administrator PowerShell. **UNKNOWN is not treated as a pass.** A passing preparation check still needs the later cold-boot capture checks.
+
+The GPU row is a preliminary PCI-ID check against the pinned admission data. A **CANDIDATE** result does not prove firmware compatibility. Existing incomplete diagnostics show their refusal reason; investigate that reason before collecting more captures.
 
 Tools outside the usual locations can be supplied explicitly with `-Clang`, `-LldLink`, `-Python` and `-VcVars`. `-Repo` selects an existing checkout at the required revision. `-Drive E` selects a USB when more than one is attached; use your actual letter.
 

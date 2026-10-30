@@ -32,6 +32,40 @@ function Get-UGRepositoryCheck([string]$Path) {
         return New-UGCheck 'Source' 'PASS' "Clean pinned source $script:UGPin"
     } catch {return New-UGCheck 'Source' 'BLOCKED' $_.Exception.Message}
 }
+function ConvertFrom-UGCandidateEnvelope($Envelope) {
+    $ids=@($Envelope.probe_device_ids)
+    if(!$ids.Count -or @($ids | Select-Object -Unique).Count -ne $ids.Count){throw 'Invalid pinned candidate-ID list.'}
+    foreach($id in $ids){if($id -isnot [string] -or $id -notmatch '^[0-9a-fA-F]{4}10[dD][eE]$'){throw 'Invalid pinned candidate-ID list.'}}
+    return @($ids | ForEach-Object {$_.ToLowerInvariant()})
+}
+function Get-UGCandidateIds([string]$RepoPath) {
+    $envelope=Get-Content -LiteralPath (Join-Path $RepoPath 'research/profile/proven.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+    return @(ConvertFrom-UGCandidateEnvelope $envelope)
+}
+function Get-UGGpuAssessment($Inventory,$AcceptedIds) {
+    $name='GPU preliminary identity';$targets=@();$uncertain=$false
+    $rows=@($Inventory | Where-Object {$null -ne $_})
+    if(!$rows.Count){return New-UGCheck $name 'UNKNOWN' 'Windows returned no display-controller inventory; no NVIDIA target can be established.'}
+    foreach($row in $rows){
+        $pnp=[string]$row.PNPDeviceID
+        $match=[regex]::Match($pnp,'(?i)^PCI\\VEN_([0-9a-f]{4})&DEV_([0-9a-f]{4})(?=&|\\|$)')
+        if($match.Success -and $match.Groups[1].Value -ieq '10de'){$targets+=$match.Groups[2].Value.ToLowerInvariant();continue}
+        if([string]$row.Name -match '(?i)NVIDIA' -or $pnp -match '(?i)^PCI\\VEN_10DE'){$uncertain=$true}
+    }
+    if($uncertain){return New-UGCheck $name 'UNKNOWN' 'A possible NVIDIA controller has an incomplete or inconsistent PCI identity; Probe is blocked.'}
+    if($targets.Count -gt 1){return New-UGCheck $name 'BLOCKED' 'More than one NVIDIA display controller was found. The pinned automatic LOCAL route requires exactly one.'}
+    if(!$targets.Count){return New-UGCheck $name 'BLOCKED' 'No NVIDIA PCI display controller was identified for the pinned automatic LOCAL route.'}
+    $device=$targets[0]
+    if($AcceptedIds -notcontains ($device+'10de')){return New-UGCheck $name 'BLOCKED' "PCI 10de:$device is outside this pinned automatic LOCAL candidate list. No probe will be staged by this helper; other project routes may differ."}
+    return New-UGCheck $name 'CANDIDATE' "PCI 10de:$device matches the preliminary ID list only. Chip/VRAM, firmware, topology and cold-capture checks still decide compatibility."
+}
+function Get-UGGpuCheck([string]$RepoPath) {
+    try {
+        $ids=@(Get-UGCandidateIds $RepoPath)
+        $inventory=@(Get-CimInstance -ClassName Win32_VideoController -Property Name,PNPDeviceID -ErrorAction Stop)
+        return Get-UGGpuAssessment $inventory $ids
+    } catch {return New-UGCheck 'GPU preliminary identity' 'UNKNOWN' 'Could not read the pinned candidate list or Windows PCI display inventory. No GPU compatibility approval is inferred.'}
+}
 function Find-UGExe([string]$Given,[string]$Name,[string]$Fallback) {
     if ($Given) {if(Test-Path -LiteralPath $Given -PathType Leaf){return [IO.Path]::GetFullPath($Given)};return $null}
     $cmd=Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -73,22 +107,46 @@ function Get-UGAssetCheck([string]$RepoPath,[string]$AssetPath) {
         return New-UGCheck 'Firmware assets' 'PASS' 'All five local assets match pinned sizes and SHA-256 hashes.' @('Build','StageUnlock')
     } catch {return New-UGCheck 'Firmware assets' 'BLOCKED' 'Five verified local firmware assets are needed for Build/StageUnlock; see upstream docs/ASSETS.en.md.' @('Build','StageUnlock')}
 }
-function Get-UGCaptureCount([string]$UsbLetter) {
-    if (!$UsbLetter) {return 0}
-    $count=0
-    foreach($file in @(Get-ChildItem -LiteralPath ($UsbLetter+':\RTX3090-UNLOCK') -File -ErrorAction SilentlyContinue)){
-        if($file.Name -match '^DIAG\d\d\.TXT$'){
-            $text=[IO.File]::ReadAllText($file.FullName)
-            if($text.Contains('probe-pci-handles=') -and $text.Contains("capture-complete=1`r`n")){$count++}
+function ConvertFrom-UGDiagnostic([string]$Text,[string]$FileName) {
+    if($FileName -notmatch '^DIAG\d\d\.TXT$'){throw 'Not a diagnostic capture filename.'}
+    $reasons=@([regex]::Matches($Text,'(?m)^\s*incomplete reason=([a-zA-Z0-9_-]{1,80}) status=0x([0-9a-fA-F]{1,16})\r?$') |
+        ForEach-Object {$_.Groups[1].Value+' (UEFI status 0x'+$_.Groups[2].Value.ToLowerInvariant()+')'} | Select-Object -Unique -First 5)
+    $complete=$Text.Contains('probe-pci-handles=') -and $Text.Contains("capture-complete=1`r`n") -and !$reasons.Count
+    if(!$complete -and !$reasons.Count){$reasons=@('Incomplete or unrecognized probe capture; review this file locally.')}
+    [pscustomobject]@{File=$FileName;Complete=$complete;Reasons=$reasons}
+}
+function Get-UGCaptureEvidence([string]$UsbLetter) {
+    $records=@()
+    if($UsbLetter){
+        foreach($file in @(Get-ChildItem -LiteralPath ($UsbLetter+':\RTX3090-UNLOCK') -File -ErrorAction SilentlyContinue)){
+            if($file.Name -notmatch '^DIAG\d\d\.TXT$'){continue}
+            try {
+                if($file.Length -gt 16MB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unexpected capture file.'}
+                $records+=ConvertFrom-UGDiagnostic ([IO.File]::ReadAllText($file.FullName)) $file.Name
+            } catch {$records+=[pscustomobject]@{File=$file.Name;Complete=$false;Reasons=@('Capture could not be read safely; review it locally.')}}
         }
     }
-    return $count
+    [pscustomobject]@{CompleteCount=@($records | Where-Object Complete).Count;Files=$records}
+}
+function Get-UGCaptureCheck($Evidence) {
+    $failed=@($Evidence.Files | Where-Object {!$_.Complete})
+    if($Evidence.CompleteCount -ge 2){return New-UGCheck 'Existing probe evidence' 'INFO' 'At least two complete files exist; upstream must still verify agreement and cold state. Older incomplete files are not counted.' @()}
+    if($failed.Count){
+        $summary=@($failed | Select-Object -First 3 | ForEach-Object {$_.File+': '+($_.Reasons -join '; ')}) -join ' | '
+        $explanation=if($summary -match 'probe-unreviewed-envelope'){'The diagnostic refused the captured PCI identity or PCI resource/state conditions. '}else{'The diagnostic did not complete. '}
+        return New-UGCheck 'Existing probe evidence' 'BLOCKED' ($explanation+$summary+' Build/StageUnlock remain blocked. Review the cause before an explicit Probe retry; unchanged reboots are not a fix. Preserve failed evidence locally.') @('Build','StageUnlock')
+    }
+    return New-UGCheck 'Existing probe evidence' 'INFO' 'No refused captures were found. Two separate complete cold captures are still required.' @()
+}
+function Get-UGCaptureCount([string]$UsbLetter) {
+    return (Get-UGCaptureEvidence $UsbLetter).CompleteCount
 }
 function Get-UGReadiness($Options) {
     $checks=New-Object 'System.Collections.Generic.List[object]'
     $config=[ordered]@{Repo=[IO.Path]::GetFullPath($Options.Repo);Drive=$null;WindowsEspGuid=$null;Assets=$Options.Assets;Python=$null;Clang=$null;LldLink=$null;VcVars=$null}
     if (!$config.Assets){$config.Assets=Join-Path $config.Repo 'assets'}
     $checks.Add((Get-UGRepositoryCheck $config.Repo))
+    $checks.Add((Get-UGGpuCheck $config.Repo))
     try {
         $systems=@(Get-Partition -ErrorAction Stop | Where-Object IsSystem)
         if($systems.Count -ne 1 -or !$systems[0].Guid -or [guid]$systems[0].Guid -eq [guid]::Empty){throw 'Expected one current system EFI partition with a GPT GUID.'}
@@ -134,11 +192,14 @@ function Get-UGReadiness($Options) {
         if($candidates.Count -ne 1){throw 'Select exactly one existing FAT32 USB using -Drive X. System/boot disks are refused.'}
         $config.Drive=$candidates[0];$checks.Add((New-UGCheck 'USB' 'PASS' ($config.Drive+': is a FAT32 USB data volume.')))
     } catch {$checks.Add((New-UGCheck 'USB' 'BLOCKED' $_.Exception.Message))}
-    $captures=Get-UGCaptureCount $config.Drive
-    [pscustomobject]@{Checks=@($checks.ToArray());Config=$config;CaptureCount=$captures}
+    $evidence=Get-UGCaptureEvidence $config.Drive
+    $checks.Add((Get-UGCaptureCheck $evidence))
+    [pscustomobject]@{Checks=@($checks.ToArray());Config=$config;CaptureCount=$evidence.CompleteCount;CaptureEvidence=$evidence}
 }
 function Get-UGDecision($Readiness,[string]$SelectedAction,[bool]$DoExecute) {
-    $errors=@($Readiness.Checks | Where-Object {$_.RequiredFor -contains $SelectedAction -and $_.Status -ne 'PASS'} | ForEach-Object {$_.Name+': '+$_.Detail})
+    $errors=@($Readiness.Checks | Where-Object {$_.RequiredFor -contains $SelectedAction -and $_.Status -ne 'PASS' -and
+        !($_.Name -eq 'GPU preliminary identity' -and $_.Status -eq 'CANDIDATE')} | ForEach-Object {$_.Name+': '+$_.Detail})
+    if($SelectedAction -ne 'Check' -and @($Readiness.Checks | Where-Object Name -eq 'GPU preliminary identity').Count -ne 1){$errors+='GPU preliminary identity was not established; Probe/Build/StageUnlock cannot proceed.'}
     if($SelectedAction -eq 'Probe' -and $Readiness.CaptureCount -ge 2){$errors+='Two complete capture files exist; choose Build so the upstream checker can assess them.'}
     if($SelectedAction -in @('Build','StageUnlock') -and $Readiness.CaptureCount -lt 2){$errors+='Need at least two complete probe captures from separate full shutdowns. Run Probe first.'}
     [pscustomobject]@{Action=$SelectedAction;Blockers=$errors;WillExecute=($SelectedAction -ne 'Check' -and $DoExecute -and $errors.Count -eq 0);PlanOnly=(!$DoExecute -and $SelectedAction -ne 'Check')}
@@ -177,11 +238,20 @@ function Invoke-UGMain($Options) {
         Write-Host 'Local report saved. It includes tool paths and your local EFI GUID; do not include it in public posts.'
     }
     if($Options.Execute -and $Options.Action -ne 'Check' -and $decision.Blockers.Count){throw 'Readiness checks blocked this step; nothing was executed.'}
+    if($Options.Action -eq 'Probe' -and @($readiness.Checks | Where-Object {$_.Name -eq 'Existing probe evidence' -and $_.Status -eq 'BLOCKED'}).Count){
+        Write-Host 'This is a diagnostic retry, not a compatibility approval. Review the refusal above and correct its cause before another cold capture. Existing private evidence is preserved by the upstream workflow.'
+    }
     $null=Invoke-UGExecution $readiness $Options.Action ([bool]$Options.Execute)
     if($decision.WillExecute -and $Options.Action -eq 'Probe'){Write-Host 'Probe staged. Fully shut down, boot the USB, let Windows return, then do a second full-shutdown USB boot. Run Build afterward.'}
     if($decision.WillExecute -and $Options.Action -eq 'Build'){Write-Host 'Build/test step finished. Review upstream output; StageUnlock is a separate explicit step.'}
     if($decision.WillExecute -and $Options.Action -eq 'StageUnlock'){Write-Host 'Unlock files staged. Read the upstream USB guide before the supervised first cold boot. No boot priority was changed.'}
-    if($Options.Action -eq 'Check'){$next=if($readiness.CaptureCount -ge 2){'Build'}else{'Probe'};Write-Host "Check only: no USB files, boot settings or GPU tuning changed. Choose $next for the next plan."}
+    if($Options.Action -eq 'Check'){
+        $next=if($readiness.CaptureCount -ge 2){'Build'}else{'Probe'}
+        $nextDecision=Get-UGDecision $readiness $next $false
+        if($nextDecision.Blockers.Count){Write-Host "Check only: $next is blocked by the checks above. Do not stage or repeat USB boots until the reason is addressed."}
+        elseif(@($readiness.Checks | Where-Object {$_.Name -eq 'Existing probe evidence' -and $_.Status -eq 'BLOCKED'}).Count){Write-Host 'Check only: review the diagnostic refusal above. Do not repeat unchanged boots. After correcting the cause, an explicit Probe retry can prepare another diagnostic capture; it does not authorize an unlock.'}
+        else{Write-Host "Check only: preparation checks allow a $next plan. GPU identity remains a candidate; no compatibility or unlock success is established."}
+    }
 }
 if($MyInvocation.InvocationName -ne '.'){
     $options=@{Action=$Action;Repo=$Repo;Drive=$Drive;Assets=$Assets;Python=$Python;Clang=$Clang;LldLink=$LldLink;VcVars=$VcVars;ReportPath=$ReportPath;Execute=$Execute}

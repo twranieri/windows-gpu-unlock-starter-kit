@@ -1,14 +1,32 @@
 # Windows GPU Unlock Starter Kit
 
-**Experimental: selected RTX 30-series configurations only. RTX 20-series, RTX 40-series and arbitrary RTX 30-series cards are not supported by this pinned workflow.** Candidate cards are RTX 3060 12GB, selected RTX 3060 Ti/3070 variants, and RTX 3090/3090 Ti; exact card, firmware and platform checks still apply.
+**Experimental: selected RTX 30-series configurations only. This is not an unlock for every RTX 30-series card.** RTX 20-series and RTX 40-series are outside this kit's pinned Windows workflow. See the exact PCI IDs below before downloading tools or preparing a USB.
 
-[Download the starter kit](dist/gpu-unlock-starter-kit-v0.1.1.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Originating results](docs/ORIGINATING-RESULTS.md) · [Historical report and data](research/originating-rtx3090/)
+[Download the starter kit](dist/gpu-unlock-starter-kit-v0.1.2.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [Originating results](docs/ORIGINATING-RESULTS.md) · [Historical report and data](research/originating-rtx3090/)
 
 On GitHub's ZIP file page, use **Download raw file**. The repository source is also usable directly. This helper wraps work by impacifist/Windows GPU UNLOCK and its contributors, Zagitta/gpu-unlock, and rough2515-hub/rtx3080-unlock-public; it does not claim authorship of their unlock core or upstream endorsement.
 
-A guided preparation helper for the **pinned, experimental Windows GPU UNLOCK USB workflow**. Version 0.1.1.
+A guided preparation helper for the **pinned, experimental Windows GPU UNLOCK USB workflow**. Version 0.1.2.
 
 The helper finds your tools, Windows boot partition and eligible USB, checks readiness, and resumes the existing capture/build/test pipeline. Each PC gets its own locally generated profile. It does not turn an arbitrary RTX card into a supported configuration.
+
+## Which cards can use this kit?
+
+These are **candidate PCI IDs**, not a guarantee that every board with the same model name will pass the firmware and platform checks. All have NVIDIA vendor ID `10DE`.
+
+| Card | Device ID accepted by this pinned workflow |
+|---|---|
+| RTX 3060 12GB, selected variants | `2487`, `2504` |
+| RTX 3060 Ti 8GB, selected variant | `24C9` |
+| RTX 3070 8GB, selected variant | `2484` |
+| RTX 3090 24GB | `2204` |
+| RTX 3090 Ti 24GB | `2203` |
+
+**Not admitted by this kit:** RTX 3050, RTX 3060 8GB, other RTX 3060 Ti/3070 IDs, RTX 3070 Ti, RTX 3080 (including `2206`), RTX 3080 Ti, laptop variants, and RTX 20/40/50-series cards. A newer upstream feature is not automatically included in this version.
+
+The kit is **not locked to the originating RTX 3090**. It detects each recipient's Windows boot partition and builds a new LOCAL profile from that PC's own diagnostic captures. The name `RTX3090-UNLOCK` is an upstream USB folder name, not a requirement to reuse the original card or profile.
+
+The exact chip, VRAM, UEFI driver code and platform still have to pass the unchanged upstream checks. Read the [compatibility details and 0/2 troubleshooting](docs/COMPATIBILITY.md) before starting. The broader GPU support of another platform or upstream project does not establish support in this Windows kit.
 
 ## What you need
 
@@ -38,6 +56,8 @@ This obtains the exact Windows and firmware source revisions in `pinned-source.j
 ```
 
 Resolve the listed missing tools or settings. If Windows cannot read encryption or Secure Boot state without elevation, run this check from an administrator PowerShell. **UNKNOWN is not treated as a pass.** A passing preparation check still needs the later cold-boot capture checks.
+
+The GPU row checks the current NVIDIA PCI ID against the pinned admission data. **CANDIDATE means only that the ID is listed**, not that this PC is firmware-compatible. Unsupported, unknown or multiple NVIDIA controllers block preparation. Existing failed captures show their refusal reason rather than silently prompting more boots; see [0/2 troubleshooting](docs/COMPATIBILITY.md#why-the-capture-count-can-stay-at-02).
 
 Tools outside the usual locations can be supplied explicitly with `-Clang`, `-LldLink`, `-Python` and `-VcVars`. `-Repo` selects an existing checkout at the required revision. `-Drive E` selects a USB when more than one is attached; use your actual letter.
 

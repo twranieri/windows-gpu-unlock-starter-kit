@@ -1,6 +1,8 @@
 # Step-by-step setup
 
-Use only a candidate configuration accepted by the [pinned local-profile workflow](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/docs/NEW-MACHINE.en.md). This kit does not unlock RTX 20/40-series cards. Each PC needs its own captures and validation.
+**Check your card before installing tools or preparing a USB.** Candidate NVIDIA device IDs are RTX 3060 12GB `2487`/`2504`, RTX 3060 Ti 8GB `24C9`, RTX 3070 8GB `2484`, RTX 3090 `2204`, and RTX 3090 Ti `2203`. An exact ID match is preliminary; firmware and platform validation still apply.
+
+RTX 3050, RTX 3070 Ti, RTX 3080/3080 Ti, other unlisted RTX 30 variants, laptop variants and RTX 20/40/50 cards are outside this pinned kit. See [compatibility and 0/2 troubleshooting](COMPATIBILITY.md). Each recipient generates their own profile; no originating-machine profile is reused.
 
 ## 1. Get the requirements
 
@@ -67,6 +69,8 @@ This stages a read-only diagnostic probe. The upstream procedure preserves a pre
 Fully shut down, power on, and select the **UEFI USB** from the motherboard's one-time boot menu. Let the probe return to Windows.
 
 Repeat from **another full shutdown**. A Windows restart does not replace the two cold boots. Keep the raw capture files private and local.
+
+If the count stays at 0/2, inspect the diagnostic refusal before repeating boots. `capture-complete=0` is not a valid capture; `probe-unreviewed-envelope` on an unlisted PCI ID requires hardware-support work, not more power cycles. See [the diagnostic explanation](COMPATIBILITY.md#why-the-capture-count-can-stay-at-02).
 
 ## 9. Build this PC's profile and run its tests
 

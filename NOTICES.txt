@@ -1,4 +1,4 @@
-Windows GPU Unlock Starter Kit 0.1.1
+Windows GPU Unlock Starter Kit 0.1.2
 Added 2026-10-30: guided Windows preparation, pinned source acquisition,
 native Windows firmware preparation, and before/after tensor-core benchmarking.
 

@@ -1,4 +1,27 @@
-Starter Kit 0.1.1 — validation record, 2026-10-30
+Starter Kit 0.1.2 — validation update, 2026-10-30
+
+- 49 mocked PowerShell runner checks passed, including preliminary candidate IDs,
+  an unsupported RTX 3080 2206, missing/unknown/multiple NVIDIA identities,
+  blocking unsafe progression, bounded refusal summaries and explicit diagnostic
+  retries after reviewing a failure. Test inventory and pipeline calls were mocked;
+  these checks did not query or change a real GPU, USB or firmware setting.
+- All 39 offline Python tests passed again; benchmark, comparator and firmware
+  preparation logic and both upstream source pins are unchanged.
+- PowerShell 7 and Windows PowerShell 5.1 syntax parsing passed. Full 5.1 script
+  execution remains untested under the host's existing policy.
+- The diagnostic parser was checked offline against a submitted refused capture;
+  it reported probe-unreviewed-envelope and did not count it as complete. No raw
+  submitted capture or private machine data is included in the repository/ZIP.
+- README, quickstart and compatibility guide list all six device IDs in the
+  unchanged pinned proven.json. No unsupported PCI ID was added to the workflow.
+- The source-only release ZIP has an explicit allowlist, per-file SHA-256 manifest,
+  byte and CRC verification. Local quickstart and compatibility pages are included;
+  historical report links in the archived README point to the public repository.
+
+No new physical boot/recovery, real GPU benchmark or cross-machine qualification
+was performed for this update. CANDIDATE is only a preliminary PCI-ID match.
+
+Original 0.1.1 validation record, retained for context:
 
 Host tests completed:
 - 15 portable tensor benchmark tests and 14 comparison tests use mocked GPU/Torch
