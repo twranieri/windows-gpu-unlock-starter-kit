@@ -1,0 +1,56 @@
+{
+  "status": "verified",
+  "matched_metadata": true,
+  "correctness_checks_passed": 24,
+  "gpu_settings": {
+    "name": "NVIDIA GeForce RTX 3090",
+    "pci.bus_id": "00000000:2B:00.0",
+    "driver_version": "617.42",
+    "vbios_version": "94.02.4b.00.0b",
+    "memory.total": "24576",
+    "power.limit": "350.00",
+    "power.default_limit": "350.00",
+    "clocks.max.sm": "2100",
+    "clocks.max.memory": "9751"
+  },
+  "results": [
+    {
+      "mode": "fp32_ieee",
+      "before_tflops": 25.951307454363263,
+      "after_tflops": 25.761560781532655,
+      "ratio": 0.9926883578731327,
+      "gain_percent": -0.7311642126867302
+    },
+    {
+      "mode": "fp16_fp32_accumulate",
+      "before_tflops": 70.36604274694575,
+      "after_tflops": 126.93671543880671,
+      "ratio": 1.8039484740573453,
+      "gain_percent": 80.39484740573452
+    },
+    {
+      "mode": "bf16_fp32_accumulate",
+      "before_tflops": 70.44105761568689,
+      "after_tflops": 130.05594530451938,
+      "ratio": 1.8463088106098586,
+      "gain_percent": 84.63088106098586
+    },
+    {
+      "mode": "tf32_fp32_accumulate",
+      "before_tflops": 35.82961347957846,
+      "after_tflops": 66.98274670773635,
+      "ratio": 1.869480025117045,
+      "gain_percent": 86.94800251170449
+    }
+  ],
+  "limits": "One successful unlock boot and synthetic GEMM comparison. Application performance, long-term stability and sleep/resume not tested.",
+  "original_local_input_sha256": {
+    "stock": "d9a5cf621093755af8f6adfd7e325d8a9ee04129e444717fa72adf7bae19afae",
+    "unlocked": "cb9d5e3f13358533a6047de8c52baba40b6d8962f811e1f2c47b750f1e9f1404"
+  },
+  "sanitized_input_sha256": {
+    "stock.json": "e19cb35c57dbf025996ba69fcd6c6398f116607674da22ce5a8e427433c8a16c",
+    "unlocked.json": "7830cc021f1898763ea503ce2ad61b13ca341edb400a6ab794dd8e28670a353b"
+  },
+  "sanitization": "Absolute local paths replaced with basenames/environment labels. Timing samples, numerical checks and numeric metadata retained. Original hashes refer to private original JSON, not these sanitized copies."
+}

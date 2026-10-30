@@ -1,0 +1,118 @@
+{
+  "format": 2,
+  "all_passed": true,
+  "hardware_access": false,
+  "job_count": 22,
+  "results": {
+    "generator refusals": {
+      "Exit": 0,
+      "Expected": 0
+    },
+    "stock-selection": {
+      "Exit": 0,
+      "Expected": 0
+    },
+    "checks (real config)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS 261 preflight checks (actual config, legacy capability layout and malformed inputs)"
+    },
+    "checks other profile (must reject)": {
+      "Exit": 1,
+      "Expected": 1,
+      "Last": "1/247 checks failed"
+    },
+    "port": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "UEFI adapter targeting, DMA ownership, I/O faults and FLR containment: PASS"
+    },
+    "fresh PCI identity": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS 557 fresh PCI identity assertions; actual ownership/port code, RAM-only"
+    },
+    "write-lock": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS production preflight write/DMA/master/FLR locks even with armed flag forced"
+    },
+    "master-attributes": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "29 BME protocol/cache/containment scenarios passed; EFI services simulated."
+    },
+    "runtime": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "Freestanding runtime and LLP64 bounded formatter: PASS"
+    },
+    "profile-lock-entryLatchedSs1Full": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS repeated write/phase and armed-toggle cannot rearm; fresh GuInit valid path and FLR preserved"
+    },
+    "profile-lock-entryLatchedSs1Preserve": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS preserve policy rejects every SS1 write"
+    },
+    "r2 console replay (real graph)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS R2 checks: 613; mock/replay only, no GPU/firmware access"
+    },
+    "r2 replay other profile (must reject)": {
+      "Exit": 1,
+      "Expected": 1,
+      "Last": "FAIL single physical RTX survives console removal without output calls scenario=0 calls=0"
+    },
+    "research input policy": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS research input policy: 140 checks, 20 scenarios; RAM-only"
+    },
+    "cold pre-check (read-only)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS 207 cold pre-check cases; read-only, no MMIO writes"
+    },
+    "full flow gates": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS full-handoff flow checks: 39; no EFI services executed"
+    },
+    "release replay, no EDID driver (real graph)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS headless no-EDID-driver release checks: 4893; real graph/code/PROM fixtures, no GPU access"
+    },
+    "core transaction (efi)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "112 real core + compat + UEFI port scenarios passed; all PCI/MMIO/DMA/firmware execution simulated."
+    },
+    "manual entry-latched": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS entry-latched production app/core full integration; hardware untested"
+    },
+    "automatic internal": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS automatic real app: no-U stock transaction; Esc/read/reset/stall failures, cold/display/config drift, new owner and wrong partition blocked; no real GPU access"
+    },
+    "headless internal": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS headless real app/core: zero-GOP and virtual-only success; physical/invalid GOP, late input/log mutation, Esc, file warning/failure and owner warning blocked; console calls zero"
+    },
+    "headless USB (shipped child)": {
+      "Exit": 0,
+      "Expected": 0,
+      "Last": "PASS headless real app/core: zero-GOP and virtual-only success; physical/invalid GOP, late input/log mutation, Esc, file warning/failure and owner warning blocked; console calls zero"
+    }
+  },
+  "tested_utc": "2026-10-30T00:46:29.0585599Z",
+  "note": "RAM-only/mock/replay results. Two rejection jobs intentionally require exit 1."
+}

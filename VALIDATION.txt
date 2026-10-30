@@ -1,0 +1,43 @@
+Starter Kit 0.1.1 — validation record, 2026-10-30
+
+Host tests completed:
+- 15 portable tensor benchmark tests and 14 comparison tests use mocked GPU/Torch
+  services and synthetic timing fixtures. They exercise the original four-mode protocol,
+  complete-output correctness records, matched software/hardware/settings,
+  malformed or incomplete results, and exclusive output-file creation. A mocked
+  full-protocol benchmark output is accepted by the comparator in a round-trip
+  test; these fixtures perform no real GPU work.
+- 10 Python asset-preparation tests using synthetic archives and files, including
+  path/link/size/hash guards, collisions and plan-only behavior.
+- 17 PowerShell runner checks with the preparation/staging entry point mocked,
+  including blocked execution returning a failure and separate StageUnlock.
+- PowerShell 7 and Windows PowerShell 5.1 parsing. Full 5.1 script execution was
+  not tested because the host's existing execution policy blocked it; no policy
+  was changed or bypassed.
+- Source helper syntax, no-write download preview, refusal of an unrelated
+  existing directory, and no-op checks of the existing pinned source checkouts.
+- Real read-only preparation check found the pinned source, tools, existing
+  assets, current Windows EFI partition and FAT32 USB. Non-elevated Secure Boot
+  and encryption queries correctly reported UNKNOWN and blocked execution.
+- Real Windows asset generation into a new local test directory using existing
+  SHA-256-verified original inputs, without downloads. Both original generators
+  completed and all five resulting firmware files, license and notice verified.
+
+Not exercised by this new helper:
+- Fresh network source/input acquisition on another PC.
+- Actual USB staging or a new physical unlock/recovery boot through this helper.
+- Universal GPU/motherboard support, unattended recovery, or automatic boot order.
+- A new physical GPU benchmark run using the portable test. The originating
+  machine's earlier before/after GEMM measurements used the original pinned
+  interpreter and GPU address; the new test generalizes identity selection while
+  retaining its default 4096-square/3-trial/30-sample/2-second-warmup protocol.
+
+The underlying workflow is pinned to the source that previously completed the
+originating machine's two-capture/profile/22-host-job/USB-boot process. That result
+does not substitute for each recipient's capture and physical validation.
+
+Package contents are selected by an explicit allowlist and SHA-256 manifest.
+Generated test assets, local inputs/work, private reports, profiles and raw logs
+are excluded. The public ZIP contains no EFI, firmware, PROM/VBIOS or driver
+binary. Test fixtures and their synthetic results are not hardware performance
+measurements. No application-generation comparison tool is included.

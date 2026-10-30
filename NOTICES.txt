@@ -1,0 +1,29 @@
+Windows GPU Unlock Starter Kit 0.1.1
+Added 2026-10-30: guided Windows preparation, pinned source acquisition,
+native Windows firmware preparation, and before/after tensor-core benchmarking.
+
+This helper is distributed under GPL-2.0-only; see LICENSE.
+It is a preparation layer around these independent upstream projects:
+
+Windows GPU UNLOCK — impacifist and contributors
+https://github.com/impacifist/Windows-GPU-UNLOCK
+Pinned revision: 75071aa134616c3d65ad315e0cf2810bf34b191b
+https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/THIRD_PARTY_NOTICES.md
+
+gpu-unlock — Zagitta and contributors
+https://github.com/Zagitta/gpu-unlock
+Pinned revision: 0ebdb1c6308b6a2072be5bf04513472942541956
+https://github.com/Zagitta/gpu-unlock/blob/0ebdb1c6308b6a2072be5bf04513472942541956/firmware/NOTICE.md
+
+Earlier port work: rough2515-hub/rtx3080-unlock-public
+https://github.com/rough2515-hub/rtx3080-unlock-public/tree/a08254d269af30ace9e57237abd3d8e6c261e8f5
+
+The starter ZIP contains no upstream EFI executable, GPU firmware, VBIOS/PROM,
+Windows driver, CUDA DLL, raw diagnostic capture or machine-specific profile.
+Recipients obtain the pinned upstream sources locally. Those sources retain
+their own licenses, attribution, notices and change history. Firmware generation
+must retain its generated NVIDIA-LICENSE and upstream firmware NOTICE.
+
+No upstream endorsement is claimed. A preparation check is not hardware
+compatibility approval. The unchanged upstream capture, profile, asset and host
+test gates decide whether a local USB package can be built.

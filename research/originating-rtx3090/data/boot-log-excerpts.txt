@@ -1,0 +1,23 @@
+SELECTED WRAPPER STATUS LINES
+internal-handoff-v1 status=0x0000000000000000
+pre-release-cold-check status=0x0000000000000000
+headless-console-pre-release-verification status=0x0000000000000000
+headless-display-child-consumers-preflight status=0x0000000000000000
+full-preparation-result status=0x0000000000000000
+automatic-unlock-start-Esc-cancels status=0x0000000000000000
+original-unlock-return status=0x0000000000000000
+full-windows-start status=0x0000000000000000
+windows-preclose-verify-begin status=0x0000000000000000
+verify-complete status=0x0000000000000000
+windows-close-files-next-then-final-verify-and-StartImage status=0x0000000000000000
+
+SELECTED CHILD STATUS LINES
+pre-FLR selectors: ss0=0x88888888 expected=0x88888888 ss1=0x8 expected=0x8
+PCIe FLR returned: result=0
+post-FLR SEC2 reset released, GSP halted, BME=0 pending=0 WPR2=1ffffe00:00000000 SS0=88888888 SS1=00000008
+restore PCI command: actual=0x3 original=0x3 mask=0x6
+BME containment: attribute_status=0 hardware_status=0 command=0x3 cached=0x300 pending=0
+transaction result=0 containment=0 started=1 quiesced=1 fault=0 retained=0 maps=0 FLR=1
+FINAL status=0 stage=transaction attempted=1 driver_release=0 clean=1
+
+The wrapper log ends immediately before Windows StartImage. The user returning to the desktop separately confirmed Windows handoff.

@@ -1,0 +1,8 @@
+PUBLIC POSTING PACKAGE
+
+Open report.html for the full report, or copy POST.txt into a Markdown-capable post editor.
+Data files contain sanitized copies and all measured timing samples.
+benchmark-gemm.py is byte-identical to the script used for the two completed runs.
+The plot is supplied as PNG and SVG.
+No EFI binaries, firmware blobs, generated profile header or raw firmware graphs are included.
+Automatic boot remains unverified at the time of this report.

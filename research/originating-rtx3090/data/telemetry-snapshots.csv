@@ -1,0 +1,7 @@
+state,trial,temperature_c,power_w,sm_clock_mhz,gpu_utilization_percent,memory_used_mib,snapshot_kind
+stock,1,42,282.78,1980,99,1280,after complete four-mode trial
+stock,2,44,284.44,1980,99,1280,after complete four-mode trial
+stock,3,45,282.65,1965,99,1282,after complete four-mode trial
+unlocked,1,45,335.52,1890,99,1314,after complete four-mode trial
+unlocked,2,47,337.96,1905,98,1314,after complete four-mode trial
+unlocked,3,48,339.65,1905,99,1314,after complete four-mode trial

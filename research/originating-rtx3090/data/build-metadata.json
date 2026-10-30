@@ -1,0 +1,48 @@
+{
+  "windows_source_commit": "75071aa134616c3d65ad315e0cf2810bf34b191b",
+  "tracked_source_changes": false,
+  "firmware_generator_commit": "0ebdb1c6308b6a2072be5bf04513472942541956",
+  "clang_version": "20.1.8",
+  "lld_version": "20.1.8",
+  "tooling_python": "3.14.5",
+  "msvc_tools_version": "14.51.36231",
+  "local_profile_name": "LOCAL-220410de-147d10de-6e52535d",
+  "local_profile_header_sha256": "cfcc36138896c442ef81e51088fc65b031f4828b8b0099b125fed21a82524586",
+  "source_tree_sha256": "7bbc2c723a45dcd5d471d1db65c63745335a857f773cb27f2808713fef825d39",
+  "host_evidence_sha256": "e106af9ec57dc39bee09fa4b52ff27176a610e3ed13e0dac692e02f1a8cd9345",
+  "diagnostic_efi_sha256": "7c497c41ef6a513f01a1edc453c614db6bf6166111e57638a71e0176d195283f",
+  "unlock_wrapper_sha256": "caccdbd54dac13cb9dc49a633885076c2e85f613a1c7c33317f205c7431d3fea",
+  "unlock_child_sha256": "3179e2692a44c54762da8d37088e9a83a48615d152209b09a6a5602f7f0bd1c9",
+  "profile_scope": "USB only; headless; one physical RTX GOP; no iGPU; no active EDID driver",
+  "nvgop_version": "0x00060009",
+  "nvgop_text_sha256": "d045cee2113e461c7c678ec21542b1d0f18356765c0fc6a0bf2dcf824088e011",
+  "prom_sha256": "6e52535d1da1f9222c1cc0ba5990a02b4a22e6af89e93d2447e671d29cf21c8b",
+  "firmware_assets": [
+    {
+      "Name": "booter_load_ga102.bin",
+      "Bytes": 61256,
+      "Sha256": "056cbc064a888f80717726c54d7f64fcd68044d123870c95a74f37f4975dcaa4"
+    },
+    {
+      "Name": "v67-ga102-610.43.03.bin",
+      "Bytes": 64000,
+      "Sha256": "2a0aa1f86d0b6afff5214d641d87d46dc98ef06ed908ff05d0ddbad5ffb7e197"
+    },
+    {
+      "Name": "gsp_ga10x.bin",
+      "Bytes": 84277400,
+      "Sha256": "572373620a37418f24dc16b5031c39338778c3257e48e8408de9a57291b24f3a"
+    },
+    {
+      "Name": "gsp_boot_ga102.bin",
+      "Bytes": 24576,
+      "Sha256": "3df651acb174fd5f5561a1996965b192f50c5d763168446ed0d4ead19d895768"
+    },
+    {
+      "Name": "gsp_boot_desc_ga102.bin",
+      "Bytes": 84,
+      "Sha256": "cc5a3fc1f4c47f2fe107b1b68f0176d8a448e6dec84b575e5560ccef5262bf15"
+    }
+  ],
+  "historical_manifest_note": "Original pre-boot HardwareTested=false fields are retained in local originals. This public summary separately records the later successful physical boot."
+}

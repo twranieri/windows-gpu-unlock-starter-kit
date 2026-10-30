@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "started_utc": "2026-10-30T00:46:50.725762+00:00",
+  "status": "failed",
+  "purpose": "Current-state GEMM performance; no unlock-state determination",
+  "script": {
+    "path": "benchmark-gemm.py",
+    "bytes": 11339,
+    "sha256": "8c5fe54ae07b6dde4a135d1208da5f8eeab0322dd6a189419ceb6dc02e01a374"
+  },
+  "python": {
+    "executable": {
+      "path": "python.exe",
+      "bytes": 262144,
+      "sha256": "99bbec125a2d2ce19b6257324a5a5b70539a64c9fd7b9724c6b65dcba8a6d276"
+    },
+    "version": "3.12.14 (main, Aug 14 2026, 15:40:22) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.19045-SP0"
+  },
+  "protocol": {
+    "n": 4096,
+    "warmup_seconds": 2.0,
+    "samples": 30,
+    "trials": 3,
+    "modes": [
+      "fp32_ieee",
+      "fp16_fp32_accumulate",
+      "bf16_fp32_accumulate",
+      "tf32_fp32_accumulate"
+    ]
+  },
+  "trials": [],
+  "environment": {
+    "NVIDIA_TF32_OVERRIDE": null,
+    "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": null,
+    "CUDA_VISIBLE_DEVICES": null,
+    "CUBLAS_WORKSPACE_CONFIG": null
+  },
+  "gpu_before": {
+    "name": "NVIDIA GeForce RTX 3090",
+    "pci.bus_id": "00000000:2B:00.0",
+    "driver_version": "617.42",
+    "vbios_version": "94.02.4b.00.0b",
+    "memory.total": "24576",
+    "power.limit": "350.00",
+    "power.default_limit": "350.00",
+    "clocks.max.sm": "2100",
+    "clocks.max.memory": "9751",
+    "utilization.gpu": "4",
+    "memory.used": "686",
+    "temperature.gpu": "32",
+    "power.draw": "27.92",
+    "clocks.sm": "210"
+  },
+  "torch": {
+    "version": "2.14.1+cu130",
+    "file": "torch/__init__.py",
+    "cuda_build": "13.0",
+    "git_version": "5c4886908584029761b579af026dcfb627c84070",
+    "build_configuration": "PyTorch built with:\n  - C++ Version: 202002\n  - MSVC 194234444\n  - Intel(R) oneAPI Math Kernel Library Version 2026.1-Product Build 20260612 for Intel(R) 64 architecture applications\n  - Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)\n  - OpenMP 2019\n  - LAPACK is enabled (usually provided by MKL)\n  - CPU capability usage: AVX2\n  - CUDA Runtime 13.0\n  - NVCC architecture flags: -gencode;arch=compute_75,code=sm_75;-gencode;arch=compute_80,code=sm_80;-gencode;arch=compute_86,code=sm_86;-gencode;arch=compute_90,code=sm_90;-gencode;arch=compute_100,code=sm_100;-gencode;arch=compute_120,code=sm_120\n  - CuDNN 92.4  (built against CUDA 13.3)\n  - Magma 2.5.4\n  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, COMMIT_SHA=5c4886908584029761b579af026dcfb627c84070, CUDA_FLAGS= -DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS -Xcompiler /Zc:__cplusplus -Xcompiler /Zc:preprocessor -Xcompiler /w -w -Xcompiler /FS -Xfatbin -compress-all -DONNX_NAMESPACE=onnx_torch --use-local-env -gencode arch=compute_75,code=sm_75 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_100,code=sm_100 -gencode arch=compute_120,code=sm_120 -Xcudafe --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl --Werror cross-execution-space-call --no-host-device-move-forward --expt-relaxed-constexpr --expt-extended-lambda -Xfatbin -compress-all -Xcompiler=/wd4819,/wd4503,/wd4190,/wd4244,/wd4251,/wd4275,/wd4522 -Wno-deprecated-gpu-targets --expt-extended-lambda -DCUB_WRAPPED_NAMESPACE=at_cuda_detail -DDISABLE_CUSPARSE_DEPRECATED -DCUDA_HAS_FP16=1 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__, CUDA_VERSION=13.0, CUDNN_VERSION=9.24.0, CXX_COMPILER=<build path redacted>, CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /Zc:__cplusplus /bigobj /FS /utf-8 -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DHAS_CUPTI -DSYMBOLICATE_MOBILE_DEBUG_HANDLE /wd4624 /wd4068 /wd4067 /wd4267 /wd4661 /wd4717 /wd4244 /wd4804 /wd4273, LAPACK_INFO=mkl, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, TORCH_VERSION=2.14.1, USE_CUDA=1, USE_CUDNN=ON, USE_CUSPARSELT=OFF, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_HIPSPARSELT=OFF, USE_MKL=ON, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=OFF, USE_NNPACK=OFF, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=OFF, \n",
+    "cublas_dlls": [
+      {
+        "path": "cublas64_13.dll",
+        "bytes": 50288240,
+        "sha256": "5d083083cdd613577496791dd96d00fe3a78c955684b53ca46a8ffa3e0b1e170"
+      },
+      {
+        "path": "cublasLt64_13.dll",
+        "bytes": 477896816,
+        "sha256": "e1c26671801ecd435baf97c6e9cfe28196cf55005c2039356b48030b09ce5dd5"
+      }
+    ],
+    "gpu_properties": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "compute_capability": [
+        8,
+        6
+      ],
+      "total_memory_bytes": 25769279488,
+      "multiprocessor_count": 82
+    }
+  },
+  "error": "RuntimeError: GPU utilization exceeds 5%; finish other GPU jobs first",
+  "finished_utc": "2026-10-30T00:47:06.272386+00:00"
+}

@@ -1,0 +1,150 @@
+{
+  "format": 2,
+  "checker_version": 1,
+  "envelope_sha256": "e8e6f63555870a9626edda1ad7b4d52bda3022eeed2720da7da0dbb429a581c5",
+  "route": "automatic_local_profile",
+  "status": "candidate",
+  "hardware_tested": false,
+  "write_eligible": false,
+  "checks": [
+    {
+      "state": "candidate",
+      "code": "observations_pass",
+      "capture": "DIAG00.TXT",
+      "message": "Capture observations pass the shared structural/profile checks."
+    },
+    {
+      "state": "candidate",
+      "code": "observations_pass",
+      "capture": "DIAG01.TXT",
+      "message": "Capture observations pass the shared structural/profile checks."
+    },
+    {
+      "state": "candidate",
+      "code": "images_pass",
+      "message": "Latest capture driver code passes the shared loaded-image and reviewed nvgop hash checks."
+    },
+    {
+      "state": "candidate",
+      "code": "prom_pass",
+      "message": "PROM.BIN size/hash matches; FWSEC parsing is still pending."
+    }
+  ],
+  "capture_count": 2,
+  "observations": [
+    {
+      "capture": "DIAG00.TXT",
+      "available": true,
+      "display_controller_count": 1,
+      "nvidia_display_count": 1,
+      "other_display_count": 0,
+      "display_controllers": [
+        {
+          "pci_id": "220410de",
+          "subsystem_id": "147d10de",
+          "class_revision": "030000a1",
+          "location": {
+            "segment": 0,
+            "bus": 43,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "display_controllers_truncated": false,
+      "gop_handle_count": 1,
+      "edid_by_driver_open_count": 0,
+      "edid_active_open_count": 0,
+      "chip_id": "b72000a1",
+      "device_memory_size_mib": 24576,
+      "register_snapshot": "complete",
+      "firmware_bindings": [
+        {
+          "role": "console_gfx",
+          "version": "00000010",
+          "image_bytes": 14816
+        },
+        {
+          "role": "nvgop",
+          "version": "00060009",
+          "image_bytes": 177920
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        }
+      ],
+      "firmware_bindings_truncated": false
+    },
+    {
+      "capture": "DIAG01.TXT",
+      "available": true,
+      "display_controller_count": 1,
+      "nvidia_display_count": 1,
+      "other_display_count": 0,
+      "display_controllers": [
+        {
+          "pci_id": "220410de",
+          "subsystem_id": "147d10de",
+          "class_revision": "030000a1",
+          "location": {
+            "segment": 0,
+            "bus": 43,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "display_controllers_truncated": false,
+      "gop_handle_count": 1,
+      "edid_by_driver_open_count": 0,
+      "edid_active_open_count": 0,
+      "chip_id": "b72000a1",
+      "device_memory_size_mib": 24576,
+      "register_snapshot": "complete",
+      "firmware_bindings": [
+        {
+          "role": "console_gfx",
+          "version": "00000010",
+          "image_bytes": 14816
+        },
+        {
+          "role": "nvgop",
+          "version": "00060009",
+          "image_bytes": 177920
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        },
+        {
+          "role": "console_text",
+          "version": "00000010",
+          "image_bytes": 24832
+        }
+      ],
+      "firmware_bindings_truncated": false
+    }
+  ],
+  "summary": "Local-profile candidate; further validation required.",
+  "scope": "Checks the automatic local-profile route only; existing fixed profiles require separate review.",
+  "limitations": "No hardware/provenance, separate cold boots, FWSEC parsing, host tests or Windows recovery verified. No unlock or write eligibility granted.",
+  "next_step": "Continue with docs/NEW-MACHINE.en.md: profile generation and required host tests, then separate supervised hardware validation."
+}

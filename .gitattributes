@@ -1,0 +1,3 @@
+# Preserve the exact archived bytes and their published SHA-256 manifests.
+* -text
+*.zip binary
