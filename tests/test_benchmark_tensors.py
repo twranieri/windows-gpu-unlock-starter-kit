@@ -21,16 +21,17 @@ SPEC.loader.exec_module(B)
 
 def gpu(**changes):
     values = ["NVIDIA Synthetic GPU", "00000000:01:00.0", "1.00", "synthetic-vbios", "24576",
-              "350.00", "350.00", "2100", "9751", "0", "100", "35", "25", "210"]
+              "350.00", "350.00", "2100", "9751", "0", "100", "35", "25", "210",
+              "GPU-11111111-1111-4111-8111-111111111111"]
     result = dict(zip(B.GPU_FIELDS, values))
     result.update(changes)
     return result
 
 
 class Tensor:
-    def __init__(self, dtype):
+    def __init__(self, dtype, device="cuda:0"):
         self.dtype = dtype
-        self.device = SimpleNamespace(type="cuda")
+        self.device = SimpleNamespace(type="cuda", index=int(device.split(":")[1]))
 
     def __ne__(self, value):
         return ("complete-output-comparison", value)
@@ -47,26 +48,37 @@ class Event:
         return 1.0
 
 
-def fake_torch():
+def fake_torch(devices=None):
     def mm(a, b, **kwargs):
         """Fake mm supports out_dtype; performs no arithmetic."""
         calls.append(kwargs)
     calls = []
     props = SimpleNamespace(name=gpu()["name"], major=8, minor=6,
-                            total_memory=24576 * 1024 ** 2, multi_processor_count=82)
+                            total_memory=24576 * 1024 ** 2, multi_processor_count=82, uuid=gpu()["uuid"])
+    devices = devices if devices is not None else [props]
+    allocations = []
+    contexts = []
+    def device_context(index):
+        contexts.append(index)
+        return nullcontext()
+    def allocate(shape, dtype, device):
+        allocations.append(device)
+        return Tensor(dtype, device)
     flags = SimpleNamespace(fp32_precision="ieee", allow_fp16_reduced_precision_reduction=False,
                             allow_bf16_reduced_precision_reduction=False, allow_fp16_accumulation=False)
-    cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1,
-                           get_device_name=lambda index: props.name, get_device_properties=lambda index: props,
-                           is_bf16_supported=lambda: True, synchronize=lambda: None,
+    cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: len(devices),
+                           get_device_name=lambda index: devices[index].name, get_device_properties=lambda index: devices[index],
+                           device=device_context,
+                           is_bf16_supported=lambda: True, synchronize=lambda *args: None,
                            Event=lambda **kwargs: Event())
     return SimpleNamespace(version=SimpleNamespace(cuda="SYNTHETIC", git_version="synthetic"),
                            cuda=cuda, backends=SimpleNamespace(cuda=SimpleNamespace(matmul=flags)),
                            float32="float32", float16="float16", bfloat16="bfloat16", mm=mm,
-                           ones=lambda shape, dtype, device: Tensor(dtype), ones_like=lambda a: Tensor(a.dtype),
-                           empty=lambda shape, dtype, device: Tensor(dtype),
+                           ones=allocate, ones_like=lambda a: Tensor(a.dtype, "cuda:" + str(a.device.index)),
+                           empty=allocate,
                            count_nonzero=lambda value: SimpleNamespace(item=lambda: 0),
-                           inference_mode=lambda: nullcontext(), calls=calls, props=props)
+                           inference_mode=lambda: nullcontext(), calls=calls, props=devices[0],
+                           allocations=allocations, contexts=contexts)
 
 
 class TensorBenchmarkTests(unittest.TestCase):
@@ -104,6 +116,104 @@ class TensorBenchmarkTests(unittest.TestCase):
         line = ",".join(gpu()[key] for key in B.GPU_FIELDS)
         with patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=line)):
             self.assertEqual(B.gpu_snapshot()["name"], "NVIDIA Synthetic GPU")
+
+    def test_full_bdf_canonicalization_and_invalid_selections(self):
+        self.assertEqual(B.canonical_bdf("0000:2B:1F.7"), "00000000:2b:1f.7")
+        for invalid in ("0", "01:00.0", "0:01:00.0", "000000000:01:00.0", "0000:01:20.0", "0000:01:00.8", " 0000:01:00.0"):
+            with self.subTest(invalid=invalid), self.assertRaises(B.BenchmarkError):
+                B.canonical_bdf(invalid)
+
+    def test_two_identical_models_require_bdf_and_ignore_inventory_order(self):
+        second = gpu(**{"pci.bus_id": "00000000:02:00.0", "uuid": "GPU-22222222-2222-4222-8222-222222222222"})
+        for rows in ([gpu(), second], [second, gpu()]):
+            output = "\n".join(",".join(row[key] for key in B.GPU_FIELDS) for row in rows)
+            with patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=output)):
+                with self.assertRaisesRegex(B.BenchmarkError, "select one"):
+                    B.gpu_snapshot()
+                self.assertEqual(B.gpu_snapshot("0000:02:00.0"), second)
+                with self.assertRaisesRegex(B.BenchmarkError, "missing"):
+                    B.gpu_snapshot("0000:03:00.0")
+
+    def test_three_gpus_and_duplicate_physical_identities_are_rejected(self):
+        second = gpu(**{"pci.bus_id": "00000000:02:00.0", "uuid": "GPU-22222222-2222-4222-8222-222222222222"})
+        third = gpu(**{"pci.bus_id": "00000000:03:00.0", "uuid": "GPU-33333333-3333-4333-8333-333333333333"})
+        for rows in ([gpu(), second, third], [gpu(), gpu()], [gpu(), dict(second, uuid=gpu()["uuid"])],
+                     [gpu(), dict(second, **{"pci.bus_id": gpu()["pci.bus_id"]})]):
+            output = "\n".join(",".join(row[key] for key in B.GPU_FIELDS) for row in rows)
+            with self.subTest(rows=rows), patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=output)):
+                with self.assertRaises(B.BenchmarkError):
+                    B.gpu_snapshot("0000:01:00.0")
+
+    def test_torch_reversed_order_binds_identical_models_by_uuid_only(self):
+        first = copy.deepcopy(fake_torch().props)
+        second = copy.deepcopy(first)
+        second.uuid = "GPU-22222222-2222-4222-8222-222222222222"
+        torch = fake_torch([second, first])
+        props, ordinal = B.validate_torch(torch, gpu())
+        self.assertIs(props, first)
+        self.assertEqual(ordinal, 1)
+        self.assertEqual(torch.contexts, [1])
+        args = SimpleNamespace(n=4096, warmup_seconds=2, samples=1, cuda_ordinal=ordinal)
+        with patch.object(B.time, "perf_counter", side_effect=[0, 2]):
+            B.measure(torch, *B.MODES[0], args)
+        self.assertEqual(torch.allocations, ["cuda:1", "cuda:1"])
+
+    def test_torch_missing_mismatched_duplicate_uuid_and_third_device_fail(self):
+        for change in ("missing", "mismatch", "duplicate", "third"):
+            props = copy.deepcopy(fake_torch().props)
+            devices = [props]
+            if change == "missing":
+                del props.uuid
+            elif change == "mismatch":
+                props.uuid = "GPU-22222222-2222-4222-8222-222222222222"
+            elif change == "duplicate":
+                devices.append(copy.deepcopy(props))
+            else:
+                devices *= 3
+            with self.subTest(change=change), self.assertRaises(B.BenchmarkError):
+                B.validate_torch(fake_torch(devices), gpu())
+
+    def test_invalid_cli_bdf_fails_before_output_or_gpu_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "invalid.json"
+            with patch.object(B, "gpu_snapshot") as query, patch.object(B.importlib, "import_module") as load:
+                with self.assertRaises(SystemExit):
+                    self.quiet_main(["--label", "stock", "--output", str(output), "--gpu", "0"])
+            self.assertFalse(output.exists())
+            query.assert_not_called()
+            load.assert_not_called()
+
+    def test_uuid_drift_during_idle_is_not_hidden_by_identical_model(self):
+        changed = gpu(uuid="GPU-22222222-2222-4222-8222-222222222222")
+        with patch.object(B, "gpu_snapshot", side_effect=[gpu(), changed]), patch.object(B.time, "sleep"):
+            with self.assertRaisesRegex(B.BenchmarkError, "settings changed"):
+                B.wait_for_idle(selected_bdf="00000000:01:00.0")
+
+    def test_complete_two_card_cli_flow_measures_only_uuid_selected_card(self):
+        first = copy.deepcopy(fake_torch().props)
+        second = copy.deepcopy(first)
+        second.uuid = "GPU-22222222-2222-4222-8222-222222222222"
+        other = gpu(**{"pci.bus_id": "00000000:02:00.0", "uuid": second.uuid})
+        output_csv = "\n".join(",".join(item[key] for key in B.GPU_FIELDS) for item in (other, gpu()))
+        with tempfile.TemporaryDirectory() as directory:
+            for selected, expected_ordinal, expected_uuid in (("0000:01:00.0", 1, first.uuid),
+                                                               ("0000:02:00.0", 0, second.uuid)):
+                torch = fake_torch([second, first])
+                output = Path(directory) / (str(expected_ordinal) + ".json")
+                with patch.dict(B.os.environ, {}, clear=True), \
+                        patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=output_csv)), \
+                        patch.object(B.time, "sleep"), \
+                        patch.object(B.time, "perf_counter", side_effect=[0, 2] * 12), \
+                        patch.object(B.importlib, "import_module", return_value=torch), \
+                        patch.object(B, "torch_metadata", return_value={"fixture": "SYNTHETIC"}):
+                    self.assertEqual(self.quiet_main(["--label", "stock", "--output", str(output), "--gpu", selected]), 0)
+                result = json.loads(output.read_text())
+                self.assertEqual(result["selected_device"]["uuid"], expected_uuid)
+                self.assertEqual(result["selected_device"]["cuda_ordinal"], expected_ordinal)
+                self.assertEqual(torch.contexts, [expected_ordinal, expected_ordinal])
+                self.assertEqual(torch.allocations, ["cuda:" + str(expected_ordinal)] * 24)
+                self.assertEqual(len(result["trials"]), 3)
+                self.assertTrue(all(trial["gpu_after"]["uuid"] == expected_uuid for trial in result["trials"]))
 
     def test_nonfinite_gpu_telemetry_rejected(self):
         data = gpu(**{"power.draw": "nan"})
@@ -209,6 +319,9 @@ class TensorBenchmarkTests(unittest.TestCase):
                 self.assertEqual(self.quiet_main(["--label", "stock", "--output", str(output)]), 0)
             result = json.loads(output.read_text())
             self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["schema_version"], 3)
+            self.assertEqual(result["selected_device"], {"pci_bus_id": gpu()["pci.bus_id"], "uuid": gpu()["uuid"],
+                                                       "cuda_ordinal": 0, "identity_method": "physical GPU UUID"})
             self.assertEqual(result["label"], "stock")
             self.assertEqual(result["protocol"], {"n": 4096, "warmup_seconds": 2.0,
                                                   "samples": 30, "trials": 3,

@@ -4,6 +4,9 @@
 Use the identical script and Python/CUDA-enabled Torch environment before and
 after a separately performed boot experiment. --label is operator-supplied and
 does not prove an unlock. --help imports no Torch and does not query the GPU.
+Runs on one selected card at a time with at most two installed NVIDIA GPUs.
+--gpu requires a full PCI BDF when two are installed. Schema 3 adds UUID-bound
+selection; legacy schema 2 results must be compared only with other schema 2.
 """
 
 import argparse
@@ -25,8 +28,8 @@ import time
 
 GPU_FIELDS = ("name", "pci.bus_id", "driver_version", "vbios_version", "memory.total",
               "power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory",
-              "utilization.gpu", "memory.used", "temperature.gpu", "power.draw", "clocks.sm")
-SETTINGS_FIELDS = GPU_FIELDS[:9]
+              "utilization.gpu", "memory.used", "temperature.gpu", "power.draw", "clocks.sm", "uuid")
+SETTINGS_FIELDS = GPU_FIELDS[:9] + ("uuid",)
 MODES = (("fp32_ieee", "float32", "ieee"),
          ("fp16_fp32_accumulate", "float16", "ieee"),
          ("bf16_fp32_accumulate", "bfloat16", "ieee"),
@@ -72,20 +75,52 @@ def number(gpu, field):
     return value
 
 
-def gpu_snapshot():
+def canonical_bdf(value):
+    """Require the full PCI domain:bus:device.function; never accept an ordinal."""
+    if not isinstance(value, str):
+        raise BenchmarkError("GPU selection requires a full PCI BDF")
+    match = re.fullmatch(r"([0-9a-fA-F]{4}|[0-9a-fA-F]{8}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])", value)
+    if not match or int(match[3], 16) > 31:
+        raise BenchmarkError("GPU selection requires a full PCI BDF, e.g. 00000000:01:00.0")
+    return f"{int(match[1], 16):08x}:{int(match[2], 16):02x}:{int(match[3], 16):02x}.{match[4]}"
+
+
+def canonical_uuid(value):
+    if not isinstance(value, str):
+        raise BenchmarkError("A physical GPU UUID string is required; no identity fallback is used")
+    match = re.fullmatch(r"(?:GPU-)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", value)
+    if not match or set(match[1].replace("-", "")) == {"0"}:
+        raise BenchmarkError("A valid physical GPU UUID is required; MIG/ordinal/model fallback is not used")
+    return "GPU-" + match[1].lower()
+
+
+def gpu_snapshot(selected_bdf=None):
     completed = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(GPU_FIELDS),
                                 "--format=csv,noheader,nounits"], check=True,
                                capture_output=True, text=True, timeout=15)
     rows = list(csv.reader(completed.stdout.strip().splitlines()))
-    if len(rows) != 1 or len(rows[0]) != len(GPU_FIELDS):
-        raise BenchmarkError("Expected exactly one NVIDIA GPU and complete telemetry")
-    gpu = dict(zip(GPU_FIELDS, (value.strip() for value in rows[0])))
-    if not re.fullmatch(r"[0-9a-fA-F]{1,8}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", gpu["pci.bus_id"]):
-        raise BenchmarkError("Unavailable or invalid GPU PCI location")
+    if not 1 <= len(rows) <= 2 or any(len(row) != len(GPU_FIELDS) for row in rows):
+        raise BenchmarkError("Expected one or two NVIDIA GPUs and complete telemetry")
+    inventory = [dict(zip(GPU_FIELDS, (value.strip() for value in row))) for row in rows]
+    for item in inventory:
+        item["pci.bus_id"] = canonical_bdf(item["pci.bus_id"])
+        item["uuid"] = canonical_uuid(item["uuid"])
+    if any(len({item[key] for item in inventory}) != len(inventory) for key in ("pci.bus_id", "uuid")):
+        raise BenchmarkError("Ambiguous duplicate GPU BDF or UUID in NVIDIA inventory")
+    if selected_bdf is None:
+        if len(inventory) != 1:
+            raise BenchmarkError("Two NVIDIA GPUs are installed; select one with --gpu full-PCI-BDF")
+        gpu = inventory[0]
+    else:
+        selected_bdf = canonical_bdf(selected_bdf)
+        matches = [item for item in inventory if item["pci.bus_id"] == selected_bdf]
+        if len(matches) != 1:
+            raise BenchmarkError("Selected GPU BDF is missing from NVIDIA inventory")
+        gpu = matches[0]
     for field in ("name", "driver_version", "vbios_version"):
         if not gpu[field] or gpu[field] in ("N/A", "[N/A]", "Unknown") or PATH_LIKE.search(gpu[field]):
             raise BenchmarkError("Unavailable GPU identity field: " + field)
-    for field in GPU_FIELDS[4:]:
+    for field in GPU_FIELDS[4:-1]:
         number(gpu, field)
     for field in ("memory.total", "power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory"):
         if number(gpu, field) <= 0:
@@ -111,11 +146,11 @@ def assert_idle(gpu):
             raise BenchmarkError("Positive comparison setting unavailable: " + field)
 
 
-def wait_for_idle(timeout_seconds=30):
+def wait_for_idle(timeout_seconds=30, selected_bdf=None):
     deadline = time.monotonic() + timeout_seconds
     consecutive, last_error, identity = 0, None, None
     while True:
-        snapshot = gpu_snapshot()
+        snapshot = gpu_snapshot(selected_bdf)
         settings = comparison_settings(snapshot)
         if identity is None:
             identity = settings
@@ -146,17 +181,29 @@ def precision_settings(torch):
 def validate_torch(torch, gpu):
     if not torch.version.cuda or not torch.cuda.is_available():
         raise BenchmarkError("A CUDA-enabled PyTorch installation and working NVIDIA CUDA device are required")
-    if torch.cuda.device_count() != 1 or torch.cuda.get_device_name(0) != gpu["name"]:
-        raise BenchmarkError("Torch and nvidia-smi disagree about the single GPU")
-    props = torch.cuda.get_device_properties(0)
-    if props.name != gpu["name"] or props.major < 8:
+    if any(not callable(getattr(torch.cuda, key, None)) for key in ("device_count", "get_device_properties", "get_device_name", "device")):
+        raise BenchmarkError("Torch must expose CUDA device enumeration and device contexts")
+    count = torch.cuda.device_count()
+    if type(count) is not int or not 1 <= count <= 2:
+        raise BenchmarkError("Expected one or two visible Torch CUDA devices")
+    visible = [(index, torch.cuda.get_device_properties(index)) for index in range(count)]
+    identities = [canonical_uuid(getattr(props, "uuid", None)) for _, props in visible]
+    if len(set(identities)) != len(identities):
+        raise BenchmarkError("Ambiguous duplicate Torch GPU UUIDs")
+    selected_uuid = canonical_uuid(gpu.get("uuid"))
+    matches = [(index, props) for (index, props), uuid in zip(visible, identities) if uuid == selected_uuid]
+    if len(matches) != 1:
+        raise BenchmarkError("Selected NVIDIA GPU UUID has no unique matching Torch CUDA device")
+    cuda_ordinal, props = matches[0]
+    if torch.cuda.get_device_name(cuda_ordinal) != gpu["name"] or props.name != gpu["name"] or props.major < 8:
         raise BenchmarkError("This exact BF16/TF32 protocol requires the matched NVIDIA GPU with compute capability 8.0 or newer")
     physical_bytes = number(gpu, "memory.total") * 1024 ** 2
     if (not isinstance(props.total_memory, int) or props.total_memory <= 0 or
             abs(props.total_memory - physical_bytes) > max(64 * 1024 ** 2, physical_bytes * 0.01)):
         raise BenchmarkError("Torch and nvidia-smi GPU memory identities disagree")
-    if not torch.cuda.is_bf16_supported():
-        raise BenchmarkError("Native BF16 support is required; no emulation or dtype fallback is used")
+    with torch.cuda.device(cuda_ordinal):
+        if not torch.cuda.is_bf16_supported():
+            raise BenchmarkError("Native BF16 support is required; no emulation or dtype fallback is used")
     for target, names in ((torch, ("mm", "ones", "ones_like", "empty", "count_nonzero", "inference_mode")),
                           (torch.cuda, ("Event", "synchronize"))):
         if any(not callable(getattr(target, name, None)) for name in names):
@@ -178,7 +225,7 @@ def validate_torch(torch, gpu):
     configured = precision_settings(torch)
     if configured["fp32_precision"] != "ieee" or any(configured[k] is not False for k in configured if k != "fp32_precision"):
         raise BenchmarkError("Required precision/accumulation controls did not take effect")
-    return props
+    return props, cuda_ordinal
 
 
 def torch_metadata(torch, props):
@@ -193,7 +240,8 @@ def torch_metadata(torch, props):
             "build_configuration": "Content omitted to avoid disclosing build paths; full text SHA-256 recorded.",
             "build_configuration_sha256": hashlib.sha256(build.encode()).hexdigest(),
             "cublas_dlls": [file_identity(path) for path in dlls],
-            "gpu_properties": {"name": props.name, "compute_capability": [props.major, props.minor],
+            "gpu_properties": {"name": props.name, "uuid": canonical_uuid(props.uuid),
+                               "compute_capability": [props.major, props.minor],
                                "total_memory_bytes": props.total_memory,
                                "multiprocessor_count": props.multi_processor_count}}
 
@@ -204,10 +252,12 @@ def measure(torch, name, dtype_name, precision, args):
     if flags["fp32_precision"] != precision or any(flags[k] is not False for k in flags if k != "fp32_precision"):
         raise BenchmarkError("Requested precision/accumulation settings did not take effect")
     dtype = getattr(torch, dtype_name)
-    a = torch.ones((args.n, args.n), dtype=dtype, device="cuda:0")
+    ordinal = getattr(args, "cuda_ordinal", 0)
+    device = "cuda:" + str(ordinal)
+    a = torch.ones((args.n, args.n), dtype=dtype, device=device)
     b = torch.ones_like(a)
-    out = torch.empty((args.n, args.n), dtype=torch.float32, device="cuda:0")
-    if out.dtype != torch.float32 or out.device.type != "cuda":
+    out = torch.empty((args.n, args.n), dtype=torch.float32, device=device)
+    if out.dtype != torch.float32 or out.device.type != "cuda" or out.device.index != ordinal:
         raise BenchmarkError("FP32 CUDA output allocation did not take effect")
 
     def gemm():
@@ -216,11 +266,11 @@ def measure(torch, name, dtype_name, precision, args):
         else:
             torch.mm(a, b, out_dtype=torch.float32, out=out)
 
-    torch.cuda.synchronize()
+    torch.cuda.synchronize(ordinal)
     deadline = time.perf_counter() + args.warmup_seconds
     while True:
         gemm()
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(ordinal)
         if time.perf_counter() >= deadline:
             break
     start, stop = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
@@ -255,11 +305,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True, choices=("stock", "unlocked"), help="Operator label, not unlock proof")
     parser.add_argument("--output", required=True, type=Path, help="New result JSON; existing files are never overwritten")
+    parser.add_argument("--gpu", help="Full PCI BDF (e.g. 00000000:01:00.0); required with two installed GPUs")
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--warmup-seconds", type=float, default=2.0)
     parser.add_argument("--samples", type=int, default=30)
     parser.add_argument("--trials", type=int, default=3)
     args = parser.parse_args(argv)
+    if args.gpu is not None:
+        try:
+            args.gpu = canonical_bdf(args.gpu)
+        except BenchmarkError as error:
+            parser.error(str(error))
     if not (128 <= args.n <= 8192 and 1 <= args.samples <= 1000 and 1 <= args.trials <= 20 and
             math.isfinite(args.warmup_seconds) and 0 < args.warmup_seconds <= 60):
         parser.error("Use n=128..8192, samples=1..1000, trials=1..20, warmup=(0,60]")
@@ -273,7 +329,7 @@ def main(argv=None):
     except FileExistsError:
         parser.error("Output already exists; choose a new result path")
     raw_env, public_env, env_hashes = environment_metadata()
-    result = {"schema_version": 2, "label": args.label, "started_utc": utc_now(), "status": "incomplete",
+    result = {"schema_version": 3, "label": args.label, "started_utc": utc_now(), "status": "incomplete",
               "purpose": "Current-state GEMM performance; operator label is not an unlock-state determination",
               "protocol": {"n": args.n, "warmup_seconds": args.warmup_seconds,
                            "samples": args.samples, "trials": args.trials, "modes": [m[0] for m in MODES]},
@@ -284,16 +340,18 @@ def main(argv=None):
                             "implementation": platform.python_implementation(), "platform": platform.platform()}
         if any(raw_env[key] for key in ENVIRONMENT_FIELDS[:2]):
             raise BenchmarkError("External TF32 override is set; no workload was started")
-        initial = wait_for_idle()
+        initial = wait_for_idle(selected_bdf=args.gpu)
         result["gpu_before"] = initial
         torch = importlib.import_module("torch")
-        props = validate_torch(torch, initial)
+        props, args.cuda_ordinal = validate_torch(torch, initial)
+        result["selected_device"] = {"pci_bus_id": initial["pci.bus_id"], "uuid": initial["uuid"],
+                                     "cuda_ordinal": args.cuda_ordinal, "identity_method": "physical GPU UUID"}
         result["torch"] = torch_metadata(torch, props)
         expected = comparison_settings(initial)
-        result["gpu_pre_measurement"] = wait_for_idle()
+        result["gpu_pre_measurement"] = wait_for_idle(selected_bdf=initial["pci.bus_id"])
         if comparison_settings(result["gpu_pre_measurement"]) != expected:
             raise BenchmarkError("GPU/driver/power/clock settings changed before the first measurement")
-        with torch.inference_mode():
+        with torch.cuda.device(args.cuda_ordinal), torch.inference_mode():
             for trial in range(1, args.trials + 1):
                 record = {"trial": trial, "measurements": []}
                 result["trials"].append(record)
@@ -302,7 +360,7 @@ def main(argv=None):
                     record["measurements"].append(item)
                     print("Trial " + str(trial) + " " + mode[0] + ": " + format(item["tflops"], ".3f") +
                           " TFLOPS; all elements correct", flush=True)
-                record["gpu_after"] = gpu_snapshot()
+                record["gpu_after"] = gpu_snapshot(initial["pci.bus_id"])
                 if comparison_settings(record["gpu_after"]) != expected:
                     raise BenchmarkError("GPU/driver/power/clock comparison settings changed")
         result["summary"] = {mode[0]: {"median_tflops": statistics.median(

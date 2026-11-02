@@ -87,6 +87,19 @@ def synthetic_result(label, factor=1.0):
     return result
 
 
+def uuid_result(label, factor=1.0, uuid="GPU-11111111-1111-4111-8111-111111111111",
+                bdf="00000000:01:00.0", ordinal=0):
+    result = synthetic_result(label, factor)
+    result["schema_version"] = 3
+    for snapshot in [result["gpu_before"], result["gpu_pre_measurement"], *[t["gpu_after"] for t in result["trials"]]]:
+        snapshot["uuid"] = uuid
+        snapshot["pci.bus_id"] = bdf
+    result["torch"]["gpu_properties"]["uuid"] = uuid
+    result["selected_device"] = {"pci_bus_id": bdf, "uuid": uuid, "cuda_ordinal": ordinal,
+                                 "identity_method": "physical GPU UUID"}
+    return result
+
+
 class CompareTensorsTests(unittest.TestCase):
     def setUp(self):
         self.before = synthetic_result("stock")
@@ -120,6 +133,59 @@ class CompareTensorsTests(unittest.TestCase):
             self.assertEqual(values["after_trial_range_tflops"], [min(unlocked_rates), max(unlocked_rates)])
         self.assertEqual(before, self.before)
         self.assertEqual(after, self.after)
+
+    def test_legacy_pair_is_explicitly_labeled_without_uuid_assurance(self):
+        report = compare_tensors.compare(self.before, self.after)
+        self.assertEqual(report["benchmark_schema_version"], 2)
+        self.assertIn("physical UUID was not recorded", report["identity_validation"])
+
+    def test_uuid_pair_accepts_changed_cuda_ordinal_but_same_physical_card(self):
+        before = uuid_result("stock", ordinal=0)
+        after = uuid_result("unlocked", factor=0.5, ordinal=1)
+        report = compare_tensors.compare(before, after)
+        self.assertEqual(report["benchmark_schema_version"], 3)
+        self.assertEqual(report["gpu_settings"]["uuid"], before["selected_device"]["uuid"])
+        self.assertIn("Matched physical GPU UUID", report["identity_validation"])
+        self.assertEqual(report["modes"][MODES[0]]["speed_ratio"], 2.0)
+
+    def test_mixed_schema_pair_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "Cannot compare legacy"):
+            compare_tensors.compare(self.before, uuid_result("unlocked"))
+        with self.assertRaisesRegex(ValueError, "Cannot compare legacy"):
+            compare_tensors.compare(uuid_result("stock"), self.after)
+
+    def test_identical_model_cross_card_comparisons_are_refused(self):
+        for bdf in ("00000000:01:00.0", "00000000:02:00.0"):
+            with self.subTest(bdf=bdf), self.assertRaises(ValueError):
+                compare_tensors.compare(uuid_result("stock"), uuid_result(
+                    "unlocked", uuid="GPU-22222222-2222-4222-8222-222222222222", bdf=bdf))
+        with self.assertRaises(ValueError):
+            compare_tensors.compare(uuid_result("stock"), uuid_result("unlocked", bdf="00000000:02:00.0"))
+
+    def test_uuid_required_and_stable_at_every_checkpoint(self):
+        for checkpoint in ("gpu_before", "gpu_pre_measurement", "gpu_after", "props", "selected"):
+            for value in (None, "GPU-22222222-2222-4222-8222-222222222222", "GPU-00000000-0000-0000-0000-000000000000"):
+                before, after = uuid_result("stock"), uuid_result("unlocked")
+                target = (after["torch"]["gpu_properties"] if checkpoint == "props" else
+                          after["selected_device"] if checkpoint == "selected" else
+                          after["trials"][0]["gpu_after"] if checkpoint == "gpu_after" else after[checkpoint])
+                if value is None:
+                    target.pop("uuid")
+                else:
+                    target["uuid"] = value
+                with self.subTest(checkpoint=checkpoint, value=value), self.assertRaises(ValueError):
+                    compare_tensors.compare(before, after)
+
+    def test_selected_device_mapping_and_canonical_bdf_are_validated(self):
+        for changes in ({"cuda_ordinal": 2}, {"cuda_ordinal": True}, {"pci_bus_id": "00000000:02:00.0"},
+                        {"identity_method": "matched model name"}):
+            before, after = uuid_result("stock"), uuid_result("unlocked")
+            after["selected_device"].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                compare_tensors.compare(before, after)
+        for bdf in ("0000:01:00.0", "00000000:01:20.0", "00000000:01:0A.0"):
+            with self.subTest(bdf=bdf), self.assertRaises(ValueError):
+                compare_tensors.compare(uuid_result("stock", bdf=bdf), uuid_result("unlocked", bdf=bdf))
 
     def test_rejects_driver_power_and_hardware_setting_drift_at_any_checkpoint(self):
         for checkpoint in ("gpu_before", "gpu_pre_measurement", "gpu_after"):

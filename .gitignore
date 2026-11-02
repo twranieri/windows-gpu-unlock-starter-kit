@@ -1,5 +1,6 @@
 .local/
 Windows-GPU-UNLOCK/
+Windows-GPU-UNLOCK-dual-dev/
 gpu-unlock-firmware-source/
 asset-work/
 __pycache__/

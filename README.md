@@ -1,5 +1,9 @@
 # Windows GPU Unlock Starter Kit
 
+**Development branch:** [Experimental one/two-GPU work](experimental/dual-gpu/README.md)
+is separate from the released single-GPU preparation workflow below. It is not
+yet a supported dual-GPU unlock or an updated release ZIP.
+
 **Experimental: selected RTX 30-series configurations only. This is not an unlock for every RTX 30-series card.** RTX 20-series and RTX 40-series are outside this kit's pinned Windows workflow. See the exact PCI IDs below before downloading tools or preparing a USB.
 
 [Download the starter kit](dist/gpu-unlock-starter-kit-v0.1.2.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [Originating results](docs/ORIGINATING-RESULTS.md) · [Historical report and data](research/originating-rtx3090/)

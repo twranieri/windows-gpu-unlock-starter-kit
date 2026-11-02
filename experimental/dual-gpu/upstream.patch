@@ -1,0 +1,1807 @@
+diff --git a/internal-boot/boot/probe.c b/internal-boot/boot/probe.c
+index 1cc9a30..b0fd6f3 100644
+--- a/internal-boot/boot/probe.c
++++ b/internal-boot/boot/probe.c
+@@ -33,6 +33,16 @@
+ #if defined(GU_PROBE_AUTO_BUS) && (!defined(GU_PROBE_GENERIC) || !defined(GU_DIAGNOSTIC_ONLY) || !defined(GU_DIAGNOSTIC_PROBE) || defined(GU_PROBE_BUS) || defined(GU_FULL_UNLOCK) || defined(GU_EXPERIMENTAL_3090))
+ #error GU_PROBE_AUTO_BUS requires an unconstrained generic read-only diagnostic probe
+ #endif
++#ifndef GU_PROBE_MAX_TARGETS
++#define GU_PROBE_MAX_TARGETS 1U
++#endif
++#if defined(GU_PROBE_DUAL)
++#if !defined(GU_PROBE_GENERIC) || !defined(GU_DIAGNOSTIC_ONLY) || !defined(GU_DIAGNOSTIC_PROBE) || !defined(GU_PROBE_AUTO_BUS) || defined(GU_FULL_UNLOCK) || defined(GU_EXPERIMENTAL_3090) || GU_PROBE_MAX_TARGETS != 2U
++#error GU_PROBE_DUAL requires explicit max2 generic automatic read-only diagnostic mode
++#endif
++#elif GU_PROBE_MAX_TARGETS != 1U
++#error Multiple probe targets require explicit GU_PROBE_DUAL read-only mode
++#endif
+ #ifndef GU_PROBE_BUS
+ #define GU_PROBE_BUS 1U
+ #endif
+@@ -54,10 +64,12 @@ VOID Problem(CAPTURE *c,const char *where,EFI_STATUS s);
+ #if !defined(GU_DIAGNOSTIC_ONLY) || !defined(GU_DIAGNOSTIC_PROBE) || defined(GU_FULL_UNLOCK) || defined(GU_EXPERIMENTAL_3090)
+ #error GU_PROBE_GENERIC is a read-only diagnostic build only
+ #endif
++#ifndef GU_PROBE_DUAL
+ static BOOLEAN ProbeTarget(EFI_PCI_IO_PROTOCOL *io,UINT32 id) {
+   UINT32 cls=0;
+   return (id&0xffffU)==0x10deU && io->Pci.Read(io,EfiPciIoWidthUint32,8,1,&cls)==EFI_SUCCESS && (cls>>24)==3;
+ }
++#endif
+ #else
+ static BOOLEAN ProbeTarget(EFI_PCI_IO_PROTOCOL *io,UINT32 id) {(void)io;return id==GU_BOARD_ID;}
+ #endif
+@@ -69,6 +81,18 @@ static EFI_GUID GopGuidL=EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+ static EFI_SYSTEM_TABLE *SysT;
+ static UINTN DumpIndex;
+ static CHAR16 ImgPrefix[]=L"\\RTX3090-UNLOCK\\IMG";
++#ifdef GU_PROBE_DUAL
++typedef struct {
++  EFI_HANDLE Handle;
++  EFI_PCI_IO_PROTOCOL *Io;
++  UINTN Segment,Bus,Device,Function;
++  UINT32 Config[64];
++  GU_PROBE_PIN Pin;
++} GU_DUAL_TARGET;
++static GU_DUAL_TARGET DualTargets[2];
++static UINTN DualCount,DualDumpIndex;
++static BOOLEAN DualSnapshotSame(CAPTURE *c);
++#endif
+ 
+ #ifdef GU_PROBE_PRESERVE_CAPTURE
+ /* No CREATE flag until absence was confirmed. Never replace an earlier capture.
+@@ -147,16 +171,29 @@ static VOID ProbeCaps(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io) {
+ /* Host-test fixture only: the same PROM bytes that were hashed, never parsed here. */
+ #if defined(GU_PROBE_GENERIC) || defined(GU_PROBE_DUMP_PROM)
+ static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
++#ifdef GU_PROBE_DUAL
++  CHAR16 *name=DualDumpIndex==0?L"\\RTX3090-UNLOCK\\PROM00.BIN":L"\\RTX3090-UNLOCK\\PROM01.BIN";
++  if(DualDumpIndex>=2){Problem(c,"dual-prom-index",EFI_INVALID_PARAMETER);return;}
++#else
++  CHAR16 *name=L"\\RTX3090-UNLOCK\\PROM.BIN";
++#endif
+ #ifdef GU_PROBE_PRESERVE_CAPTURE
+-  if(!NewDump(c,root,L"\\RTX3090-UNLOCK\\PROM.BIN"))return;
++  if(!NewDump(c,root,name))return;
+ #endif
+   EFI_FILE_PROTOCOL *f=NULL;
+-  EFI_STATUS s=root->Open(root,&f,L"\\RTX3090-UNLOCK\\PROM.BIN",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
++  EFI_STATUS s=root->Open(root,&f,name,EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
+   if(s!=EFI_SUCCESS||!f){Problem(c,"prom-open",s);return;}
+   if(!f->Write || !f->Close){Problem(c,"prom-file-methods",EFI_UNSUPPORTED);return;}
+   UINTN n=0x100000;s=f->Write(f,&n,page);
+   if(s!=EFI_SUCCESS||n!=0x100000)Problem(c,"prom-write",s==EFI_SUCCESS?EFI_END_OF_FILE:s);
+-  else{Text(c,"prom dump=PROM.BIN");End(c);}
++  else{
++#ifdef GU_PROBE_DUAL
++    Text(c,DualDumpIndex==0?"prom dump=PROM00.BIN":"prom dump=PROM01.BIN");
++#else
++    Text(c,"prom dump=PROM.BIN");
++#endif
++    End(c);
++  }
+   if(!f->Flush || f->Flush(f)!=EFI_SUCCESS)Problem(c,"prom-flush",EFI_DEVICE_ERROR);
+   if(f->Close(f)!=EFI_SUCCESS)Problem(c,"prom-close",EFI_DEVICE_ERROR);
+ }
+@@ -168,10 +205,14 @@ static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
+  * named probes pin their own
+  * PCI/subsystem and require the same 16 MiB, MEM1/BME0 resource envelope.
+  * All allocation/protocol calls finish before the final identity/config recheck. */
+-static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg) {
++static BOOLEAN ProbeEnvelopeRecord(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg,BOOLEAN record) {
+ #ifdef GU_PROBE_GENERIC
+   BOOLEAN identity=cfg[0]==0x220410deU || cfg[0]==0x220310deU ||
+-    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU || cfg[0]==0x24c910deU || cfg[0]==0x220a10deU;
++    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU || cfg[0]==0x24c910deU
++#ifndef GU_PROBE_DUAL
++    || cfg[0]==0x220a10deU
++#endif
++    ;
+ #else
+   BOOLEAN identity=cfg[0]==GU_BOARD_ID && cfg[11]==GU_BOARD_SUBSYSTEM;
+ #ifdef GU_BAR0_BASE
+@@ -192,7 +233,7 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
+       d->AddrSpaceGranularity==32 && d->AddrRangeMin==cfg[4] && d->AddrLen==0x1000000 &&
+       !d->AddrTranslationOffset && (d->AddrRangeMax==(UINT64)cfg[4]+0xffffff || d->AddrRangeMax==0xffffff) &&
+       end[0]==ACPI_END_TAG_DESCRIPTOR;
+-    if(good) {
++    if(good && record) {
+       UINT8 sum=0;for(UINTN j=0;j<sizeof(*d)+2;j++)sum=(UINT8)(sum+((const UINT8 *)d)[j]);
+       if(end[1] && sum)good=FALSE;
+     }
+@@ -207,6 +248,9 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
+   if(raw && release(raw)!=EFI_SUCCESS)good=FALSE;
+   return good;
+ }
++static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg) {
++  return ProbeEnvelopeRecord(c,io,cfg,TRUE);
++}
+ static BOOLEAN ProbeUnchanged(CAPTURE *c,EFI_HANDLE handle,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg,UINTN expectedSegment,UINTN expectedBus) {
+   EFI_PCI_IO_PROTOCOL *current=NULL;UINTN seg=~(UINTN)0,bus=~(UINTN)0,dev=~(UINTN)0,fun=~(UINTN)0;UINT32 now[64];
+   /* Every byte differs from its expected value; successful short output cannot
+@@ -219,6 +263,71 @@ static BOOLEAN ProbeUnchanged(CAPTURE *c,EFI_HANDLE handle,EFI_PCI_IO_PROTOCOL *
+   for(UINTN j=0;j<64;j++)if(now[j]!=cfg[j])return FALSE;
+   return TRUE;
+ }
++#ifdef GU_PROBE_DUAL
++static BOOLEAN DualPinsSame(CAPTURE *c) {
++  if(!DualCount || DualCount>2)return FALSE;
++  for(UINTN i=0;i<DualCount;i++)if(!GuProbePinSame(c,&DualTargets[i].Pin))return FALSE;
++  return TRUE;
++}
++static BOOLEAN DualBefore(const GU_DUAL_TARGET *a,const GU_DUAL_TARGET *b) {
++  if(a->Segment!=b->Segment)return a->Segment<b->Segment;
++  if(a->Bus!=b->Bus)return a->Bus<b->Bus;
++  if(a->Device!=b->Device)return a->Device<b->Device;
++  return a->Function<b->Function;
++}
++/* Inventory is PCI reads only. All NVIDIA display devices count, including
++ * unsupported devices; no convenient subset can acquire deep-read permission. */
++static BOOLEAN DualCollect(CAPTURE *c,EFI_HANDLE *hs,UINTN n,GU_DUAL_TARGET out[2],UINTN *count) {
++  EFI_BOOT_SERVICES *bs=c->Table->BootServices;*count=0;
++  for(UINTN i=0;i<n;i++) {
++    if(DualCount && !DualPinsSame(c))return FALSE;
++    EFI_PCI_IO_PROTOCOL *io=NULL;UINT32 id=0,cls=0;
++    if(bs->HandleProtocol(hs[i],&PciGuidL,(VOID **)&io)!=EFI_SUCCESS || !io || !io->Pci.Read ||
++       io->Pci.Read(io,EfiPciIoWidthUint32,0,1,&id)!=EFI_SUCCESS)return FALSE;
++    if(DualCount && !DualPinsSame(c))return FALSE;
++    if((id&0xffffU)!=0x10deU)continue;
++    if(io->Pci.Read(io,EfiPciIoWidthUint32,8,1,&cls)!=EFI_SUCCESS)return FALSE;
++    if((cls>>24)!=3)continue;
++    if(*count>=2)return FALSE;
++    GU_DUAL_TARGET *d=&out[(*count)++];*d=(GU_DUAL_TARGET){0};d->Handle=hs[i];d->Io=io;
++    if(!GuProbeTakePin(c,io,&d->Pin) ||
++       io->GetLocation(io,&d->Segment,&d->Bus,&d->Device,&d->Function)!=EFI_SUCCESS ||
++       d->Segment>0xffffU || !d->Bus || d->Bus>255U || d->Device || d->Function)return FALSE;
++    for(UINTN j=0;j<64;j++)d->Config[j]=0xa5a5a5a5U;
++    if(io->Pci.Read(io,EfiPciIoWidthUint32,0,64,d->Config)!=EFI_SUCCESS ||
++       d->Config[0]!=id || d->Config[2]!=cls || !GuProbePinSame(c,&d->Pin))return FALSE;
++  }
++  if(!*count)return FALSE;
++  if(*count==2) {
++    if(out[0].Handle==out[1].Handle || out[0].Io==out[1].Io ||
++       (!DualBefore(&out[0],&out[1]) && !DualBefore(&out[1],&out[0])))return FALSE;
++    if(DualBefore(&out[1],&out[0])){GU_DUAL_TARGET tmp=out[0];out[0]=out[1];out[1]=tmp;}
++  }
++  return TRUE;
++}
++/* Re-enumerate the entire installed set, free that temporary list, then perform
++ * the final bounded raw-config checks. No logging/file callback follows these
++ * checks before the selected card's existing bounded MMIO/PROM batch. */
++static BOOLEAN DualSnapshotSame(CAPTURE *c) {
++  if(!DualPinsSame(c))return FALSE;
++  EFI_HANDLE *hs=NULL;UINTN n=0,count=0;
++  EFI_FREE_POOL release=DualTargets[0].Pin.Free;
++  EFI_STATUS s=DualTargets[0].Pin.Enumerate(ByProtocol,&PciGuidL,NULL,&n,&hs);
++  GU_DUAL_TARGET fresh[2];BOOLEAN good=FALSE;
++  if(s==EFI_SUCCESS && hs && n<=1024 && DualPinsSame(c))good=DualCollect(c,hs,n,fresh,&count);
++  if(hs && release(hs)!=EFI_SUCCESS)good=FALSE;
++  if(!good || count!=DualCount || !DualPinsSame(c))return FALSE;
++  for(UINTN i=0;i<DualCount;i++) {
++    if(fresh[i].Handle!=DualTargets[i].Handle || fresh[i].Io!=DualTargets[i].Io ||
++       fresh[i].Segment!=DualTargets[i].Segment || fresh[i].Bus!=DualTargets[i].Bus ||
++       fresh[i].Device!=DualTargets[i].Device || fresh[i].Function!=DualTargets[i].Function)return FALSE;
++    for(UINTN j=0;j<64;j++)if(fresh[i].Config[j]!=DualTargets[i].Config[j])return FALSE;
++    if(!ProbeUnchanged(c,DualTargets[i].Handle,DualTargets[i].Io,DualTargets[i].Config,
++                       DualTargets[i].Segment,DualTargets[i].Bus) || !DualPinsSame(c))return FALSE;
++  }
++  return TRUE;
++}
++#endif
+ #endif
+ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROTOCOL *root,
+                      EFI_HANDLE handle,const UINT32 *cfg,UINTN expectedSegment,UINTN expectedBus) {
+@@ -244,6 +353,11 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+   if(!GuProbePinSame(c,&pin) || !ProbeUnchanged(c,handle,io,cfg,expectedSegment,expectedBus) || !GuProbePinSame(c,&pin)) {
+     pin.Free(page);Problem(c,"probe-identity-changed",EFI_NOT_READY);return;
+   }
++#ifdef GU_PROBE_DUAL
++  if(!DualSnapshotSame(c) || !GuProbePinSame(c,&pin)) {
++    pin.Free(page);Problem(c,"dual-inventory-changed",EFI_NOT_READY);return;
++  }
++#endif
+ #else
+   (void)handle;(void)cfg;(void)expectedSegment;(void)expectedBus;
+ #endif
+@@ -337,9 +451,64 @@ static VOID ProbeGops(CAPTURE *c) {
+   Text(c," conin=0x");Hex(c,(UINTN)SysT->ConsoleInHandle,12);End(c);
+ }
+ 
++#ifdef GU_PROBE_DUAL
++static EFI_STATUS ProbeDualGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
++  EFI_BOOT_SERVICES *bs=t->BootServices;EFI_HANDLE *hs=NULL;UINTN n=0,count=0;
++  EFI_FREE_POOL release=bs->FreePool;
++  DualCount=0;DualDumpIndex=0;
++  EFI_FILE_PROTOCOL *root=c->DumpRoot;
++  if(root && !root->Open){Problem(c,"dump-volume",EFI_INVALID_PARAMETER);root=NULL;}
++  Text(c,"dual-probe-v1 max-targets=2 readonly=1");End(c);
++  EFI_STATUS s=bs->LocateHandleBuffer(ByProtocol,&PciGuidL,NULL,&n,&hs);
++  BOOLEAN good=s==EFI_SUCCESS && hs && n<=1024 && DualCollect(c,hs,n,DualTargets,&count);
++  if(hs && (!release || release(hs)!=EFI_SUCCESS))good=FALSE;
++  if(!good){Problem(c,"dual-inventory",EFI_UNSUPPORTED);return EFI_NOT_READY;}
++  DualCount=count;
++  /* Both resource envelopes are checked before either card's MMIO/PROM.
++   * Silent preflight avoids placing card-specific records outside its block. */
++  for(UINTN i=0;i<DualCount;i++)if(!DualPinsSame(c) ||
++      !ProbeEnvelopeRecord(c,DualTargets[i].Io,DualTargets[i].Config,FALSE) || !DualPinsSame(c)) {
++    Problem(c,"dual-unreviewed-envelope",EFI_UNSUPPORTED);return EFI_NOT_READY;
++  }
++  if(!DualSnapshotSame(c)){Problem(c,"dual-inventory-changed",EFI_NOT_READY);return EFI_NOT_READY;}
++  Text(c,"probe-pci-handles=");Hex(c,n,8);End(c);
++  for(UINTN i=0;i<DualCount && c->Io==EFI_SUCCESS && c->Complete;i++) {
++    GU_DUAL_TARGET *d=&DualTargets[i];DualDumpIndex=i;
++    Text(c,"dual-card-begin index=");Hex(c,i,4);End(c);
++    Text(c,"probe-target seg=0x");Hex(c,d->Segment,4);Text(c," bus=0x");Hex(c,d->Bus,4);
++    Text(c," dev=0x");Hex(c,d->Device,4);Text(c," fun=0x");Hex(c,d->Function,4);End(c);
++    PH(c,"cfg256 status=0x",EFI_SUCCESS);
++    Text(c,"cfg dwords=");for(UINTN j=0;j<64;j++){Hex(c,d->Config[j],8);Text(c," ");}End(c);
++    PH(c,"subsystem=0x",d->Config[11]);
++    if(!DualPinsSame(c)){Problem(c,"dual-capabilities-changed",EFI_NOT_READY);return EFI_COMPROMISED_DATA;}
++    if(c->Io!=EFI_SUCCESS)return c->Io;
++    ProbeCaps(c,d->Io);
++    if(!DualPinsSame(c)){Problem(c,"dual-capabilities-changed",EFI_NOT_READY);return EFI_COMPROMISED_DATA;}
++#ifdef GU_PROBE_PARENT_BASELINE
++    static GU_DS_CAPTURE parent;parent=(GU_DS_CAPTURE){0};
++    s=GuProbeParentBaseline(c,&parent,d->Handle,d->Io,d->Config,d->Segment,d->Bus);
++    if(s==EFI_COMPROMISED_DATA){Problem(c,"parent-baseline-capability-changed",EFI_NOT_READY);return s;}
++#endif
++    if(DualPinsSame(c))ProbeBar(c,d->Io,d->Config[4],root,d->Handle,d->Config,d->Segment,d->Bus);
++    else Problem(c,"dual-capabilities-changed",EFI_NOT_READY);
++    if(!DualPinsSame(c)){Problem(c,"dual-capabilities-changed",EFI_NOT_READY);return EFI_COMPROMISED_DATA;}
++    Text(c,"dual-card-end index=");Hex(c,i,4);End(c);
++    if(!DualSnapshotSame(c)){Problem(c,"dual-inventory-changed",EFI_NOT_READY);break;}
++  }
++  Text(c,"dual-probe-targets=");Hex(c,DualCount,4);End(c);
++  ProbeGops(c);
++  if(root)ProbeDrivers(c,root);else Problem(c,"dump-volume",EFI_NOT_FOUND);
++  if(!DualSnapshotSame(c))Problem(c,"dual-inventory-changed",EFI_NOT_READY);
++  return c->Complete?EFI_SUCCESS:EFI_NOT_READY;
++}
++#endif
++
+ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
+   SysT=t;
+   DumpIndex=0;
++#ifdef GU_PROBE_DUAL
++  return ProbeDualGpu(t,c);
++#else
+ #ifdef GU_PROBE_PARENT_BASELINE
+   /* A distinct diagnostic invocation owns a fresh observation, never a retry of
+    * a correction transaction. Static storage keeps it off the firmware stack. */
+@@ -463,4 +632,5 @@ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
+   if(root)ProbeDrivers(c,root);else Problem(c,"dump-volume",EFI_NOT_FOUND);
+   /* Report a target that could not be captured rather than a clean success. */
+   return found?cfgError:EFI_NOT_FOUND;
++#endif
+ }
+diff --git a/internal-boot/boot/test_probe_dual.c b/internal-boot/boot/test_probe_dual.c
+new file mode 100644
+index 0000000..bcda289
+--- /dev/null
++++ b/internal-boot/boot/test_probe_dual.c
+@@ -0,0 +1,143 @@
++/* GPL-2.0-only. Real dual probe, RAM-only EFI services. No hardware APIs. */
++#define GU_PROBE_PARENT_FIXTURE
++#include "test_probe_generic.c"
++#undef main
++
++enum {D_OK,D_SINGLE,D_THIRD,D_UNKNOWN,D_DUP_BDF,D_DUP_IO,D_BAD_RESOURCE,D_BME,
++      D_PEER_ATTR,D_PEER_CALLBACK,D_THIRD_LATE,D_SHORT_CFG,D_PEER_AFTER_PROM,
++      D_SHORT_DUMP,D_BAD_LOCATION,D_ENUM_REVERSED};
++static EFI_PCI_IO_PROTOCOL Cards[3];
++static EFI_HANDLE CardHandles[3]={(VOID *)101,(VOID *)102,(VOID *)103};
++static UINT32 Configs[3][64];
++static UINTN Segments[3],Buses[3],CardCount;
++static int DualMode,PciEnums,CardRegs[3],CardProm[3],PromCreates[2];
++static UINT32 DumpWords[2];
++static EFI_FILE_PROTOCOL PromFiles[2];
++static int CardIndex(EFI_PCI_IO_PROTOCOL *io){for(int i=0;i<3;i++)if(io==&Cards[i])return i;return -1;}
++static EFI_STATUS EFIAPI DualRead(EFI_PCI_IO_PROTOCOL *io,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT32 at,UINTN n,VOID *data) {
++  int i=CardIndex(io);if(i<0)return EFI_NOT_FOUND;
++  if(w==EfiPciIoWidthUint8){*(UINT8 *)data=0;return EFI_SUCCESS;}
++  if(w!=EfiPciIoWidthUint32 || (at&3U) || at/4+n>64)return EFI_UNSUPPORTED;
++  UINTN count=n;
++  if(DualMode==D_SHORT_CFG && i==1 && n==64)count=3; /* partial success is not a valid snapshot */
++  for(UINTN j=0;j<count;j++)((UINT32 *)data)[j]=Configs[i][at/4+j];
++  return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualLocation(EFI_PCI_IO_PROTOCOL *io,UINTN *seg,UINTN *bus,UINTN *dev,UINTN *fun) {
++  int i=CardIndex(io);if(i<0)return EFI_NOT_FOUND;
++  *seg=Segments[i];*bus=Buses[i];*dev=0;*fun=0;
++  return DualMode==D_BAD_LOCATION && i==1?EFI_DEVICE_ERROR:EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualMem(EFI_PCI_IO_PROTOCOL *io,EFI_PCI_IO_PROTOCOL_WIDTH w,UINT8 bar,UINT64 at,UINTN n,VOID *data) {
++  int i=CardIndex(io);(void)n;if(i<0 || w!=EfiPciIoWidthUint32 || bar)return EFI_UNSUPPORTED;
++  if(at>=0x300000 && at<0x400000){CardProm[i]++;S.PromReads++;}
++  else{CardRegs[i]++;S.RegReads++;}
++  *(UINT32 *)data=(UINT32)at+((UINT32)i<<28);
++  if(DualMode==D_PEER_AFTER_PROM && i==1 && CardProm[i]==PROM_DWORDS)Configs[0][11]^=1U;
++  return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualBar(EFI_PCI_IO_PROTOCOL *io,UINT8 index,UINT64 *supports,VOID **out) {
++  int i=CardIndex(io);(void)index;(void)supports;if(i<0)return EFI_NOT_FOUND;
++  UINT8 *raw=calloc(1,sizeof(EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR)+2);if(!raw)return EFI_OUT_OF_RESOURCES;
++  EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=(VOID *)raw;
++  d->Desc=ACPI_ADDRESS_SPACE_DESCRIPTOR;d->Len=sizeof(*d)-3;d->AddrSpaceGranularity=32;
++  d->AddrRangeMin=Configs[i][4];d->AddrRangeMax=(UINT64)Configs[i][4]+0xffffff;
++  d->AddrLen=DualMode==D_BAD_RESOURCE && i==0?0x800000:0x1000000;
++  raw[sizeof(*d)]=ACPI_END_TAG_DESCRIPTOR;*out=raw;return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualAttr(EFI_PCI_IO_PROTOCOL *io,EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION op,UINT64 mask,UINT64 *value) {
++  int i=CardIndex(io);
++  if(i<0 || op!=EfiPciIoAttributeOperationGet || mask || !value){AttributeOthers++;return EFI_UNSUPPORTED;}
++  AttributeGets++;*value=0x200;
++  if(i==1 && DualMode==D_PEER_ATTR)Configs[0][11]^=1U;
++  if(i==1 && DualMode==D_PEER_CALLBACK)Cards[0].Mem.Read=NULL;
++  return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualLocate(EFI_LOCATE_SEARCH_TYPE search,EFI_GUID *g,VOID *key,UINTN *n,EFI_HANDLE **out) {
++  if(g && !memcmp(g,&WantPci,sizeof(*g))){
++    PciEnums++;UINTN count=CardCount;
++    if(DualMode==D_THIRD_LATE && PciEnums>1)count=3;
++    EFI_HANDLE *list=malloc(count*sizeof(*list));if(!list)return EFI_OUT_OF_RESOURCES;
++    for(UINTN i=0;i<count;i++)list[i]=CardHandles[(DualMode==D_ENUM_REVERSED && (PciEnums&1))?count-1-i:i];
++    *out=list;*n=count;return EFI_SUCCESS;
++  }
++  if(search==AllHandles){
++    EFI_HANDLE *list=malloc((CardCount+1)*sizeof(*list));if(!list)return EFI_OUT_OF_RESOURCES;
++    for(UINTN i=0;i<CardCount;i++)list[i]=CardHandles[i];list[CardCount]=GraphHandle;
++    *out=list;*n=CardCount+1;return EFI_SUCCESS;
++  }
++  return GenericLocate(search,g,key,n,out);
++}
++static EFI_STATUS EFIAPI DualHandle(EFI_HANDLE h,EFI_GUID *g,VOID **out) {
++  for(UINTN i=0;i<3;i++)if(h==CardHandles[i] && !memcmp(g,&WantPci,sizeof(*g))){
++    *out=DualMode==D_DUP_IO && i==1?&Cards[0]:&Cards[i];return EFI_SUCCESS;
++  }
++  return GenericHandle(h,g,out);
++}
++static EFI_STATUS EFIAPI DualProtocols(EFI_HANDLE h,EFI_GUID ***out,UINTN *n) {
++  for(UINTN i=0;i<CardCount;i++)if(h==CardHandles[i]){
++    EFI_GUID **p=malloc(sizeof(*p));if(!p)return EFI_OUT_OF_RESOURCES;
++    p[0]=&WantPci;*out=p;*n=1;return EFI_SUCCESS;
++  }
++  return Protocols(h,out,n);
++}
++static int SameName(const CHAR16 *a,const CHAR16 *b){while(*a && *a==*b){a++;b++;}return *a==*b;}
++static EFI_STATUS EFIAPI DualDumpWrite(EFI_FILE_PROTOCOL *f,UINTN *n,VOID *data) {
++  int slot=f==&PromFiles[0]?0:1;DumpWords[slot]=*(UINT32 *)data;Dumps++;
++  if(DualMode==D_SHORT_DUMP)(*n)--;
++  return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI DualOpen(EFI_FILE_PROTOCOL *root,EFI_FILE_PROTOCOL **out,CHAR16 *name,UINT64 mode,UINT64 attrs) {
++  int slot=SameName(name,L"\\RTX3090-UNLOCK\\PROM00.BIN")?0:
++    (SameName(name,L"\\RTX3090-UNLOCK\\PROM01.BIN")?1:-1);
++  if(slot<0)return DumpOpen(root,out,name,mode,attrs);
++  if(!(mode&(EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE))){*out=NULL;return EFI_NOT_FOUND;}
++  PromCreates[slot]++;RootOpens++;*out=&PromFiles[slot];return EFI_SUCCESS;
++}
++static void DualSetup(int mode) {
++  GenericSetup(G_OK);DualMode=mode;CardCount=mode==D_SINGLE?1:(mode==D_THIRD?3:2);PciEnums=0;
++  memset(CardRegs,0,sizeof(CardRegs));memset(CardProm,0,sizeof(CardProm));memset(PromCreates,0,sizeof(PromCreates));memset(DumpWords,0,sizeof(DumpWords));
++  for(UINTN i=0;i<3;i++){
++    Cards[i]=Pci;Cards[i].Pci.Read=DualRead;Cards[i].GetLocation=DualLocation;Cards[i].Mem.Read=DualMem;Cards[i].GetBarAttributes=DualBar;Cards[i].Attributes=DualAttr;
++    memset(Configs[i],0,sizeof(Configs[i]));Configs[i][0]=i==1?0x248410deU:0x220410deU;
++    Configs[i][1]=2;Configs[i][2]=0x030000a1;Configs[i][4]=0xf6000000U+(UINT32)i*0x1000000U;Configs[i][11]=0x100010deU+(UINT32)i;
++    Segments[i]=i==0?1:0;Buses[i]=i==0?5:43+i;
++  }
++  if(mode==D_UNKNOWN)Configs[0][0]=0x220a10deU; /* excluded from published dual scope */
++  if(mode==D_DUP_BDF){Segments[1]=Segments[0];Buses[1]=Buses[0];}
++  if(mode==D_BME)Configs[0][1]=6;
++  Bs.LocateHandleBuffer=DualLocate;Bs.HandleProtocol=DualHandle;Bs.ProtocolsPerHandle=DualProtocols;
++  RootFile.Open=DualOpen;
++  for(UINTN i=0;i<2;i++){PromFiles[i]=DumpFile;PromFiles[i].Write=DualDumpWrite;}
++}
++static EFI_STATUS DualRun(int mode) {
++  DualSetup(mode);
++  EFI_STATUS s=GuCaptureGraphOnVolume(&Table,&LogFile,&RootFile);
++  Check(!AttributeOthers && !RootCloses && !SfsSearches && !ForeignOpens,"dual capture has no writes, foreign volume search or borrowed-root close");
++  return s;
++}
++int main(void) {
++  Check(DualRun(D_OK)==EFI_SUCCESS,"two reviewed cards capture successfully");
++  Check(CardRegs[0]==16 && CardRegs[1]==16 && CardProm[0]==PROM_DWORDS && CardProm[1]==PROM_DWORDS,"both cards retain bounded reads");
++  Check(Logged("dual-probe-v1 max-targets=2 readonly=1") && Logged("capture-complete=1"),"dual capture has a distinct complete format");
++  Check(PromCreates[0]==1 && PromCreates[1]==1 && DumpWords[0]==0x10300000U && DumpWords[1]==0x00300000U,"separate PROM names follow sorted full BDF, not enumeration order");
++  const char *a=strstr(S.Output,"dual-card-begin index=0000"),*b=strstr(S.Output,"dual-card-end index=0000"),*d=strstr(S.Output,"dual-card-begin index=0001");
++  const char *target=a?strstr(a,"probe-target seg=0x0000 bus=0x002c"):NULL;
++  Check(a && b && d && target && a<b && b<d && target<b,"sorted card records are bounded by begin/end markers");
++  Check(Logged("prom dump=PROM00.BIN") && Logged("prom dump=PROM01.BIN"),"logged names match actual dump names");
++  const char *last=strstr(S.Output,"dual-card-end index=0001"),*graph=strstr(S.Output,"handle id=0x");
++  Check(last && graph && last<graph,"whole handle graph is shared outside the card sections");
++  printf("SYNTHETIC FORMAT: dual-probe-v1 max-targets=2 readonly=1\nSYNTHETIC FORMAT: dual-card-begin index=0000 -> seg=0000 bus=002c -> PROM00.BIN -> dual-card-end index=0000\nSYNTHETIC FORMAT: dual-card-begin index=0001 -> seg=0001 bus=0005 -> PROM01.BIN -> dual-card-end index=0001\n");
++  Check(DualRun(D_SINGLE)==EFI_SUCCESS && PromCreates[0]==1 && !PromCreates[1],"explicit max2 probe may observe one card without inventing another");
++  Check(DualRun(D_ENUM_REVERSED)==EFI_SUCCESS && DumpWords[0]==0x10300000U && DumpWords[1]==0x00300000U,"changing enumeration order does not reassign PROM identities");
++  const int refuse[]={D_THIRD,D_UNKNOWN,D_DUP_BDF,D_DUP_IO,D_BAD_RESOURCE,D_BME,D_PEER_ATTR,D_PEER_CALLBACK,D_THIRD_LATE,D_SHORT_CFG,D_BAD_LOCATION};
++  for(UINTN i=0;i<sizeof(refuse)/sizeof(refuse[0]);i++){
++    Check(DualRun(refuse[i])!=EFI_SUCCESS,"invalid or changed target set refuses the entire capture");
++    Check(!CardRegs[0] && !CardRegs[1] && !CardRegs[2] && !CardProm[0] && !CardProm[1] && !CardProm[2],"preflight/peer change permits no MMIO or PROM reads on either card");
++    Check(!Logged("capture-complete=1"),"refused pair cannot be reported complete");
++  }
++  Check(DualRun(D_PEER_AFTER_PROM)!=EFI_SUCCESS && CardProm[1]==PROM_DWORDS && !CardProm[0] && !Logged("capture-complete=1"),"a peer change after the first batch invalidates the whole capture and prevents the second batch");
++  Check(DualRun(D_SHORT_DUMP)!=EFI_SUCCESS && !Logged("capture-complete=1"),"short PROM dump invalidates the capture");
++  printf("PASS dual probe checks: %d; RAM-only EFI services; no hardware access\n",Checks);
++  return 0;
++}
+diff --git a/internal-boot/unlock/app.c b/internal-boot/unlock/app.c
+index 686baaf..3e32a3d 100644
+--- a/internal-boot/unlock/app.c
++++ b/internal-boot/unlock/app.c
+@@ -160,19 +160,19 @@ static EFI_STATUS ConfigCheck(BOOLEAN Save) {
+   /* BAR0 is discovered, not pinned: a 32-bit memory BAR is required, and the
+      recorded value must stay identical across every recheck of this card. */
+   UINT64 bar0=(UINT64)(config[0x10/4]&0xfffffff0U);
+-  BOOLEAN bar_ok=!(config[0x10/4]&1U) && !(config[0x10/4]&0x8U) && bar0>0x1000000U &&
+-    (Save || (bar0==Gu.bar_base && config[0x10/4]==(UINT32)Gu.bar_base));
++  BOOLEAN bar_ok=!(config[0x10/4]&0x00ffffffU) && bar0>0x1000000U &&
++    ((!Gu.initial_config_valid && Save) || (bar0==Gu.bar_base && config[0x10/4]==(UINT32)Gu.bar_base));
+   BOOLEAN valid=checked && config[2]==0x030000a1 && config[0xc8/4]==0x00050011 &&
+     bar_ok && !(config[(caps.pcie+8)/4]&0x00200000U);
+-  BOOLEAN same=Save || !memcmp(config,Gu.initial_config,sizeof(config));
+-  if(Save && bar_ok)Gu.bar_base=bar0;
++  BOOLEAN same=!Gu.initial_config_valid || !memcmp(config,Gu.initial_config,sizeof(config));
++  if(Save && !Gu.initial_config_valid && bar_ok)Gu.bar_base=bar0;
+   if(Save || !valid || !same)ConfigLog(config);
+   GuLog("target BDF=%zu:%zu:%zu.%zu checks=%u pm=%#x pcie=%#x msi=%#x msix=%#x\n",
+     (size_t)segment,(size_t)bus,(size_t)device,(size_t)function,checked,
+     (unsigned)caps.pm,(unsigned)caps.pcie,(unsigned)caps.msi,(unsigned)caps.msix);
+   if(!valid)return EFI_UNSUPPORTED;
+   if(!same)return EFI_NOT_READY;
+-  if(Save)memcpy(Gu.initial_config,config,sizeof(config));
++  if(Save && !Gu.initial_config_valid){memcpy(Gu.initial_config,config,sizeof(config));Gu.initial_config_valid=TRUE;}
+   Gu.pm_cap=caps.pm;Gu.pcie_cap=caps.pcie;Gu.pcie_version=caps.pcie_version;Gu.msi_cap=caps.msi;Gu.msix_cap=caps.msix;
+   return EFI_SUCCESS;
+ }
+@@ -225,8 +225,8 @@ static EFI_STATUS RestoreDecode(VOID) {
+   return matched?EFI_SUCCESS:EFI_COMPROMISED_DATA;
+ }
+ static EFI_STATUS BindTarget(UINTN Index) {
+-  GuActivate(Index);
+-  if(Gu.fault)return EFI_DEVICE_ERROR;
++  EFI_STATUS active=GuActivate(Index);
++  if(active!=EFI_SUCCESS || Gu.fault)return active==EFI_SUCCESS?EFI_DEVICE_ERROR:active;
+   GuLog("card %zu active: %s id=%#x bdf=%zu:%02zu:%02zu.%zu\n",
+     (size_t)Index,Gu.card_name?Gu.card_name:"?",Gu.board_id,
+     (size_t)Gu.segment,(size_t)Gu.bus,(size_t)Gu.device,(size_t)Gu.function);
+@@ -414,10 +414,49 @@ static VOID ReleaseHalt(EFI_STATUS Status,BOOLEAN Attempted) {
+     (unsigned long long)Status,Stage,Attempted,(unsigned long long)contained,(unsigned)(Gu.pci!=NULL));
+   Halt();
+ }
++/* Read-only per-card completion predicate, also used after logs/assets close.
++   Only the original, narrowly reviewed CED/URD clear is normalized after FLR. */
++static EFI_STATUS CompletedHardware(BOOLEAN Commit) {
++  UINT32 cfg[64];UINTN segment,bus,device,function;
++  if(!Gu.pci || !Gu.pci->GetLocation || !Gu.started || !Gu.quiesced || Gu.fault ||
++     Gu.retained || Gu.master_attributes_pending || Gu.allocations || Gu.dma_count || Gu.owned || Gu.armed ||
++     !Gu.profile_verified || !Gu.prom_verified)return EFI_NOT_READY;
++  EFI_STATUS s=Gu.pci->GetLocation(Gu.pci,&segment,&bus,&device,&function);
++  if(s!=EFI_SUCCESS)return s;
++  s=ReadConfig(cfg);if(s!=EFI_SUCCESS)return s;
++  if(!GuTargetConfig(cfg,segment,bus,device,function) || (cfg[1]&4U) || cfg[4]!=(UINT32)Gu.bar_base)return EFI_UNSUPPORTED;
++  for(UINTN i=0;i<64;i++) {
++    UINT32 expected=Gu.initial_config[i],observed=cfg[i];
++    if(expected==observed)continue;
++    if(i!=0x80/4 || Gu.initial_config[0x78/4]!=0x0012b410U ||
++       (expected&~0x00090000U)!=(observed&~0x00090000U) ||
++       (observed&0x00090000U&~expected))return EFI_NOT_READY;
++  }
++  UINT64 attributes=0;
++  if(!Gu.pci->Attributes)return EFI_UNSUPPORTED;
++  s=Gu.pci->Attributes(Gu.pci,EfiPciIoAttributeOperationGet,0,&attributes);
++  if(s!=EFI_SUCCESS)return s;
++  UINT64 decode=(cfg[1]&1?EFI_PCI_IO_ATTRIBUTE_IO:0)|(cfg[1]&2?EFI_PCI_IO_ATTRIBUTE_MEMORY:0);
++  if((attributes&(EFI_PCI_IO_ATTRIBUTE_IO|EFI_PCI_IO_ATTRIBUTE_MEMORY|EFI_PCI_IO_ATTRIBUTE_BUS_MASTER))!=decode)return EFI_NOT_READY;
++  if(GuRead32(0)!=Gu.expected_chip || GuRead32(0x1183a4)!=Gu.expected_memory ||
++     GuRead32(GU_FEAT_SS0_OFFSET)!=0x88888888U || GuRead32(GU_FEAT_SS1_OFFSET)!=8U || Gu.fault)return EFI_NOT_READY;
++  if(Commit){memcpy(Gu.post_config,cfg,sizeof(cfg));Gu.post_config_valid=TRUE;}
++  else if(!Gu.post_config_valid || memcmp(cfg,Gu.post_config,sizeof(cfg)))return EFI_NOT_READY;
++  return EFI_SUCCESS;
++}
++static EFI_STATUS PreflightCard(UINTN Index,VOID *Context) {
++  (void)Context;
++  Stage="all-card-config-preflight";EFI_STATUS s=BindTarget(Index);if(s!=EFI_SUCCESS)return s;
++  Stage="all-card-display-preflight";Gu.display_ok=DisplayCheck();if(!Gu.display_ok)return EFI_UNSUPPORTED;
++  Stage="all-card-bar-preflight";s=BarCheck();if(s!=EFI_SUCCESS)return s;
++  Stage="all-card-prom-preflight";s=PromCheck();if(s!=EFI_SUCCESS)return s;
++  Stage="all-card-cold-preflight";return ColdCheck();
++}
+ /* Run the full checked pipeline on the active card. Stages are identical
+  * to the single-card flow; every function reads the active Gu context. On
+  * success the card is left unlocked and quiesced with no open protocol. */
+ static EFI_STATUS RunCard(UINTN Index,EFI_SYSTEM_TABLE *St,BOOLEAN *Attempted,BOOLEAN *ReleaseAttempted) {
++  memset(&PendingOwner,0,sizeof(PendingOwner));
+   EFI_STATUS status=BindTarget(Index);if(EFI_ERROR(status))return status;
+   Stage="display";Gu.display_ok=DisplayCheck();status=Step(Gu.display_ok?EFI_SUCCESS:EFI_UNSUPPORTED);
+   if(EFI_ERROR(status))return status;
+@@ -504,9 +543,31 @@ static EFI_STATUS RunCard(UINTN Index,EFI_SYSTEM_TABLE *St,BOOLEAN *Attempted,BO
+     if(EFI_ERROR(closed))return closed;
+     Gu.owned=FALSE;
+   }
++  Stage="card-completion-verification";status=CompletedHardware(TRUE);if(status!=EFI_SUCCESS)return status;
+   Gu.complete=TRUE;
+   return EFI_SUCCESS;
+ }
++typedef struct {EFI_SYSTEM_TABLE *Table;BOOLEAN *Attempted,*ReleaseAttempted;} GU_CARD_RUN_CONTEXT;
++static EFI_STATUS RunCardOperation(UINTN Index,VOID *Context) {
++  GU_CARD_RUN_CONTEXT *c=Context;
++  return RunCard(Index,c->Table,c->Attempted,c->ReleaseAttempted);
++}
++static EFI_STATUS VerifyCardOperation(UINTN Index,VOID *Context) {
++  (void)Context;
++  EFI_STATUS s=GuActivate(Index);if(s!=EFI_SUCCESS)return s;
++  Stage="all-card-final-verification";
++  if(!Gu.complete)return EFI_NOT_READY;
++  s=PromCheck();if(s!=EFI_SUCCESS)return s;
++  return CompletedHardware(FALSE);
++}
++static EFI_STATUS VerifyAllCompletedNoLog(VOID) {
++  if(!GuAllTargetsComplete())return EFI_NOT_READY;
++  for(UINTN card=0;card<GuTargetCount();card++) {
++    EFI_STATUS s=GuActivate(card);if(s!=EFI_SUCCESS)return s;
++    s=CompletedHardware(FALSE);if(s!=EFI_SUCCESS)return s;
++  }
++  return GuAllTargetsComplete()?EFI_SUCCESS:EFI_NOT_READY;
++}
+ 
+ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
+   if(!St || !St->BootServices || !St->RuntimeServices)return EFI_INVALID_PARAMETER;
+@@ -533,12 +594,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
+   /* Baseline capture happens before the first card activates. */
+   if(!GuHeadlessCheck()){status=EFI_NOT_READY;goto finish;}
+ #endif
+-  for(UINTN card=0;card<GuTargetCount();card++) {
+-    Stage="card";status=RunCard(card,St,&attempted,&release_attempted);
+-    GuLog("card %zu finished: status=%#llx stage=%s\n",(size_t)card,(unsigned long long)status,Stage);
+-    if(EFI_ERROR(status))goto finish;
+-  }
++  GU_CARD_RUN_CONTEXT run={St,&attempted,&release_attempted};
++  GU_TARGET_OPS operations={&run,PreflightCard,RunCardOperation,VerifyCardOperation};
++  status=GuCoordinateTargets(&operations);
+  finish:
++  /* A completed first card is not rolled back by a failure on a later card.
++     Never return a partial-success session to the wrapper/firmware. */
++  if(EFI_ERROR(status) && (attempted || release_attempted || GuAnyTargetComplete()))ReleaseHalt(status,attempted);
+   if(release_attempted && (EFI_ERROR(status) || Gu.fault))ReleaseHalt(status,attempted);
+   if(attempted && !GuSafeToReturn())Halt();
+   Gu.armed=FALSE;
+@@ -554,7 +616,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
+   EFI_STATUS closed=GuIoClose();
+   if(EFI_ERROR(closed)){if(release_attempted)ReleaseHalt(closed,attempted);if(Gu.started)Halt();status=closed;}
+   GuReleaseAssets();
+-  if(!EFI_ERROR(status))GuConsole("UEFI transactions completed and cleaned up. Returning to firmware; Windows validation is pending.\n");
++  if(!EFI_ERROR(status)) {
++    GuConsole("UEFI transactions completed and cleaned up. Final all-card verification before return.\n");
++    EFI_TPL old=Gu.bs->RaiseTPL(TPL_NOTIFY);
++    EFI_STATUS final=VerifyAllCompletedNoLog();
++    Gu.bs->RestoreTPL(old);
++    if(final!=EFI_SUCCESS)Halt();
++  }
+   else GuConsole("Attempt cancelled or rejected. Returning without another attempt.\n");
+   return status;
+ }
+diff --git a/internal-boot/unlock/port.c b/internal-boot/unlock/port.c
+index edd53a4..6f0e282 100644
+--- a/internal-boot/unlock/port.c
++++ b/internal-boot/unlock/port.c
+@@ -1,129 +1,220 @@
+ /* Modified 2026-10-19/20 for Windows GPU UNLOCK; changes documented in CHANGES.md. */ #include "port.h"
+ VOID *memset(VOID *, int, size_t);
+ VOID *memcpy(VOID *, const VOID *, size_t);
++int memcmp(const VOID *,const VOID *,size_t);
+ GU_PLATFORM Gu;
+ 
+-/* Compile-time card table plus the live registry of enumerated targets. */
++/* Discovery publishes an immutable, complete registry only after every
++   NVIDIA display controller has an exact reviewed table match. */
+ static const GU_CARD_SPEC GuCardTable[] = { GU_CARD_TABLE };
+-static struct {
++#ifdef GU_CARD_PINS
++static const GU_CARD_PIN GuCardPins[] = { GU_CARD_PINS };
++_Static_assert(sizeof(GuCardPins)/sizeof(GuCardPins[0])==sizeof(GuCardTable)/sizeof(GuCardTable[0]),"capture pins must match the card table");
++_Static_assert(sizeof(GuCardPins)/sizeof(GuCardPins[0])<=GU_TARGET_LIMIT,"at most two captured targets");
++#endif
++typedef struct {
+   GU_PLATFORM ctx;
+   const GU_CARD_SPEC *spec;
+   EFI_HANDLE handle;
++  UINTN segment,bus,device,function;
++  UINT64 bar0;
++  UINT32 config[64];
+   BOOLEAN console;
+-} GuTargets_[GU_MAX_TARGETS];
+-static UINTN GuTargetCount_;
+-static UINTN GuActive_ = (UINTN)-1;
++} GU_TARGET_ENTRY;
++static GU_TARGET_ENTRY GuTargets_[GU_TARGET_LIMIT];
++static UINTN GuTargetCount_,GuActive_=(UINTN)-1;
++static BOOLEAN GuDiscoveryBusy_,GuDiscoveryReentered_;
++static EFI_BOOT_SERVICES *GuRegistryBs_;
++static EFI_HANDLE GuRegistryImage_;
++static BOOLEAN (*GuRegistryDisplay_)(VOID);
++#define GU_MAX_VOLATILE 64
++static EFI_HANDLE GuVolatile_[GU_MAX_VOLATILE];
++static UINTN GuVolatileCount_;
+ 
+ UINTN GuTargetCount(VOID) { return GuTargetCount_; }
+-const GU_CARD_SPEC *GuTargetSpec(UINTN Index) {
+-  return Index<GuTargetCount_ ? GuTargets_[Index].spec : NULL;
+-}
+-EFI_HANDLE GuTargetHandleOf(UINTN Index) {
+-  return Index<GuTargetCount_ ? GuTargets_[Index].handle : NULL;
+-}
++const GU_CARD_SPEC *GuTargetSpec(UINTN Index) {return Index<GuTargetCount_?GuTargets_[Index].spec:NULL;}
++EFI_HANDLE GuTargetHandleOf(UINTN Index) {return Index<GuTargetCount_?GuTargets_[Index].handle:NULL;}
+ BOOLEAN GuIsTargetHandle(EFI_HANDLE Handle) {
+   for(UINTN i=0;i<GuTargetCount_;i++)if(GuTargets_[i].handle==Handle)return TRUE;
+   return FALSE;
+ }
+-
+-/* Handles whose open-protocol edges may legitimately change during a run:
+-   registered target GPUs plus any agent/image/child handle recorded when a
+-   guarded driver release is authorized. */
+-#define GU_MAX_VOLATILE 64
+-static EFI_HANDLE GuVolatile_[GU_MAX_VOLATILE];
+-static UINTN GuVolatileCount_;
+-
+ VOID GuAddVolatileHandle(EFI_HANDLE Handle) {
+   if(!Handle)return;
+   for(UINTN i=0;i<GuVolatileCount_;i++)if(GuVolatile_[i]==Handle)return;
+-  if(GuVolatileCount_<GU_MAX_VOLATILE)GuVolatile_[GuVolatileCount_++]=Handle;
++  if(GuVolatileCount_>=GU_MAX_VOLATILE){Gu.fault=TRUE;return;}
++  GuVolatile_[GuVolatileCount_++]=Handle;
+ }
+ BOOLEAN GuIsVolatileHandle(EFI_HANDLE Handle) {
+   if(!Handle)return FALSE;
+   for(UINTN i=0;i<GuVolatileCount_;i++)if(GuVolatile_[i]==Handle)return TRUE;
+   return FALSE;
+ }
+-UINT32 GuTargetId(VOID) { return Gu.board_id; }
+-UINT32 GuTargetSub(VOID) { return Gu.board_subsystem; }
++UINT32 GuTargetId(VOID) {return Gu.board_id;}
++UINT32 GuTargetSub(VOID) {return Gu.board_subsystem;}
+ 
+-/* A card with BY_CHILD_CONTROLLER edges owns display children (the console
+-   GPU); it must be unlocked after every other card. */
+-static BOOLEAN GuCardHasChildren(EFI_HANDLE Handle) {
++/* Children alone do not prove console ownership. Until the wrapper supplies a
++   captured console binding, two child-owning cards are an ambiguous order. */
++static EFI_STATUS GuCardHasChildren(EFI_BOOT_SERVICES *bs,EFI_HANDLE handle,BOOLEAN *children) {
+   EFI_GUID pci=EFI_PCI_IO_PROTOCOL_GUID;
+-  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *entries=NULL;UINTN count=0;BOOLEAN children=FALSE;
+-  if(EFI_ERROR(Gu.bs->OpenProtocolInformation(Handle,&pci,&entries,&count)))return FALSE;
+-  for(UINTN i=0;i<count;i++)
+-    if(entries[i].Attributes==EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER)children=TRUE;
+-  if(entries && EFI_ERROR(Gu.bs->FreePool(entries)))children=FALSE;
+-  return children;
++  EFI_OPEN_PROTOCOL_INFORMATION_ENTRY *entries=NULL;UINTN count=0;
++  *children=FALSE;
++  EFI_STATUS s=bs->OpenProtocolInformation(handle,&pci,&entries,&count);
++  if(s!=EFI_SUCCESS || count>256 || (count && !entries)) {
++    if(entries)bs->FreePool(entries);
++    return s==EFI_SUCCESS?EFI_UNSUPPORTED:s;
++  }
++  for(UINTN i=0;i<count;i++)if(entries[i].Attributes==EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER) {
++    if(!entries[i].ControllerHandle || entries[i].OpenCount!=1){s=EFI_UNSUPPORTED;break;}
++    *children=TRUE;
++  }
++  if(entries && bs->FreePool(entries)!=EFI_SUCCESS)s=EFI_DEVICE_ERROR;
++  return s;
++}
++static BOOLEAN GuBefore(const GU_TARGET_ENTRY *a,const GU_TARGET_ENTRY *b) {
++  if(a->console!=b->console)return !a->console;
++  if(a->segment!=b->segment)return a->segment<b->segment;
++  if(a->bus!=b->bus)return a->bus<b->bus;
++  if(a->device!=b->device)return a->device<b->device;
++  return a->function<b->function;
+ }
+-
+-/* Enumerate every PCI device, match against GU_CARD_TABLE, and register each
+-   found card. Unknown cards are skipped. Non-console cards come first in the
+-   registry so the console GPU is unlocked last. */
+ EFI_STATUS GuDiscoverTargets(VOID) {
++  if(GuDiscoveryBusy_){GuDiscoveryReentered_=TRUE;Gu.fault=TRUE;return EFI_NOT_READY;}
++  if(GuTargetCount_ || GuActive_!=(UINTN)-1)return EFI_ALREADY_STARTED;
++  EFI_BOOT_SERVICES *bs=Gu.bs;
++  if(!bs || !bs->LocateHandleBuffer || !bs->HandleProtocol || !bs->OpenProtocolInformation || !bs->FreePool)return EFI_UNSUPPORTED;
++  GuDiscoveryBusy_=TRUE;GuDiscoveryReentered_=FALSE;
+   EFI_GUID pci_guid=EFI_PCI_IO_PROTOCOL_GUID;
+-  EFI_HANDLE *handles=NULL;UINTN count=0;
+-  EFI_STATUS status=Gu.bs->LocateHandleBuffer(ByProtocol,&pci_guid,NULL,&count,&handles);
+-  GuLog("PCI enumeration: status=%#llx handles=%zu\n",(unsigned long long)status,(size_t)count);
+-  if(EFI_ERROR(status) || !handles || !count || count>256){if(handles)GuFree(handles);return EFI_NOT_FOUND;}
+-  UINTN found=0;
+-  for(UINTN i=0;i<count && found<GU_MAX_TARGETS;i++) {
+-    EFI_PCI_IO_PROTOCOL *pci=NULL;UINT32 id=0,sub=0;
+-    status=Gu.bs->HandleProtocol(handles[i],&pci_guid,(VOID **)&pci);
+-    if(!EFI_ERROR(status) && pci){status=pci->Pci.Read(pci,EfiPciIoWidthUint32,0,1,&id);}
+-    if(EFI_ERROR(status) || !pci){GuLog("PCI scan failed: index=%zu status=%#llx\n",(size_t)i,(unsigned long long)status);break;}
+-    status=pci->Pci.Read(pci,EfiPciIoWidthUint32,0x2c,1,&sub);
+-    if(EFI_ERROR(status)){GuLog("PCI subsystem read failed: index=%zu\n",(size_t)i);break;}
++  EFI_HANDLE *handles=NULL;UINTN count=0,found=0,children=0;
++  GU_TARGET_ENTRY pending[GU_TARGET_LIMIT];memset(pending,0,sizeof(pending));
++  EFI_STATUS status=bs->LocateHandleBuffer(ByProtocol,&pci_guid,NULL,&count,&handles);
++  if(status!=EFI_SUCCESS || !handles || !count || count>256){if(status==EFI_SUCCESS)status=EFI_NOT_FOUND;goto finish;}
++  for(UINTN i=0;i<count;i++) {
++    EFI_PCI_IO_PROTOCOL *pci=NULL;UINT32 id=0,cls=0,config[64],again[64];
++    status=bs->HandleProtocol(handles[i],&pci_guid,(VOID **)&pci);
++    if(status!=EFI_SUCCESS || !pci || !pci->Pci.Read){if(status==EFI_SUCCESS)status=EFI_UNSUPPORTED;break;}
++    status=pci->Pci.Read(pci,EfiPciIoWidthUint32,0,1,&id);if(status!=EFI_SUCCESS)break;
++    if((id&0xffffU)!=0x10deU)continue;
++    status=pci->Pci.Read(pci,EfiPciIoWidthUint32,8,1,&cls);if(status!=EFI_SUCCESS)break;
++    if((cls>>24)!=3)continue;
++    if(found>=GU_TARGET_LIMIT || !pci->GetLocation){status=EFI_UNSUPPORTED;break;}
++    EFI_PCI_IO_PROTOCOL_CONFIG read=pci->Pci.Read;
++    EFI_PCI_IO_PROTOCOL_GET_LOCATION location=pci->GetLocation;
++    for(UINTN j=0;j<64;j++)config[j]=0xffffffffU;
++    status=read(pci,EfiPciIoWidthUint32,0,64,config);if(status!=EFI_SUCCESS)break;
++    GU_TARGET_ENTRY *entry=&pending[found];
++    status=location(pci,&entry->segment,&entry->bus,&entry->device,&entry->function);
++    if(status!=EFI_SUCCESS)break;
++    if(entry->segment>0xffffU || !entry->bus || entry->bus>255 || entry->device || entry->function){status=EFI_UNSUPPORTED;break;}
++    const GU_CARD_SPEC *spec=NULL;
++#ifdef GU_CARD_PINS
++    const GU_CARD_PIN *pin=NULL;
++#endif
+     for(UINTN t=0;t<sizeof(GuCardTable)/sizeof(GuCardTable[0]);t++) {
+-      if(id!=GuCardTable[t].id)continue;
+-      UINTN seg,bus,dev,fun;
+-      status=pci->GetLocation(pci,&seg,&bus,&dev,&fun);
+-      if(EFI_ERROR(status))break;
+-      BOOLEAN console=GuCardHasChildren(handles[i]);
+-      /* Insert before the console card so non-console targets run first. */
+-      UINTN pos=found;
+-      if(!console)for(UINTN j=0;j<found;j++)if(GuTargets_[j].console){pos=j;break;}
+-      for(UINTN j=found;j>pos;j--)GuTargets_[j]=GuTargets_[j-1];
+-      memset(&GuTargets_[pos].ctx,0,sizeof(GuTargets_[pos].ctx));
+-      GuTargets_[pos].ctx.bs=Gu.bs;GuTargets_[pos].ctx.image=Gu.image;
+-      GuTargets_[pos].ctx.display_check=Gu.display_check;
+-      GuTargets_[pos].ctx.handle=handles[i];GuTargets_[pos].ctx.pci=pci;
+-      GuTargets_[pos].ctx.segment=seg;GuTargets_[pos].ctx.bus=bus;
+-      GuTargets_[pos].ctx.device=dev;GuTargets_[pos].ctx.function=fun;
+-      GuTargets_[pos].ctx.board_id=id;GuTargets_[pos].ctx.board_subsystem=sub;
+-      GuTargets_[pos].ctx.expected_chip=GuCardTable[t].chip;
+-      GuTargets_[pos].ctx.expected_memory=GuCardTable[t].memory;
+-      GuTargets_[pos].ctx.prom_sha256=GuCardTable[t].prom_sha256;
+-      GuTargets_[pos].ctx.card_name=GuCardTable[t].name;
+-      GuTargets_[pos].spec=&GuCardTable[t];GuTargets_[pos].handle=handles[i];
+-      GuAddVolatileHandle(handles[i]);
+-      GuTargets_[pos].console=console;
+-      GuLog("target[%zu]: %s id=%#x sub=%#x bdf=%zu:%02zu:%02zu.%zu console=%u\n",
+-        (size_t)pos,GuCardTable[t].name,id,sub,(size_t)seg,(size_t)bus,(size_t)dev,(size_t)fun,(unsigned)console);
+-      if(sub!=GuCardTable[t].subsystem)
+-        GuLog("target[%zu]: subsystem %#x differs from reviewed %#x\n",(size_t)pos,sub,GuCardTable[t].subsystem);
+-      found++;
+-      break;
++      if(config[0]==GuCardTable[t].id && config[11]==GuCardTable[t].subsystem) {
++#ifdef GU_CARD_PINS
++        const GU_CARD_PIN *candidate=&GuCardPins[t];
++        if(candidate->segment!=entry->segment || candidate->bus!=entry->bus ||
++           candidate->device!=entry->device || candidate->function!=entry->function || candidate->bar0!=config[4])continue;
++        pin=candidate;
++#endif
++        if(spec){status=EFI_UNSUPPORTED;break;} /* Ambiguous immutable table. */
++        spec=&GuCardTable[t];
++      }
+     }
+-    if(EFI_ERROR(status))break;
++    if(status!=EFI_SUCCESS)break;
++    if(!spec || config[0]!=id || config[2]!=cls || cls!=0x030000a1U ||
++       (config[1]&6U)!=2U || (config[3]&0x007f0000U) || !config[4] ||
++       (config[4]&0x00ffffffU) || !spec->chip || !spec->memory || !spec->prom_sha256){status=EFI_UNSUPPORTED;break;}
++    for(UINTN j=0;j<found;j++)if(pending[j].handle==handles[i] ||
++       (pending[j].segment==entry->segment && pending[j].bus==entry->bus &&
++        pending[j].device==entry->device && pending[j].function==entry->function))status=EFI_UNSUPPORTED;
++    if(status!=EFI_SUCCESS)break;
++    status=GuCardHasChildren(bs,handles[i],&entry->console);if(status!=EFI_SUCCESS)break;
++#ifdef GU_CARD_PINS
++    if(!pin || pin->console!=entry->console){status=EFI_UNSUPPORTED;break;}
++#endif
++    if(entry->console && ++children>1){status=EFI_UNSUPPORTED;break;}
++    EFI_PCI_IO_PROTOCOL *fresh=NULL;UINTN seg=~(UINTN)0,bus=~(UINTN)0,dev=~(UINTN)0,fun=~(UINTN)0;
++    status=bs->HandleProtocol(handles[i],&pci_guid,(VOID **)&fresh);if(status!=EFI_SUCCESS)break;
++    if(fresh!=pci || pci->Pci.Read!=read || pci->GetLocation!=location){status=EFI_NOT_READY;break;}
++    for(UINTN j=0;j<64;j++)again[j]=~config[j];
++    status=read(pci,EfiPciIoWidthUint32,0,64,again);if(status!=EFI_SUCCESS)break;
++    status=location(pci,&seg,&bus,&dev,&fun);if(status!=EFI_SUCCESS)break;
++    if(memcmp(config,again,sizeof(config)) || seg!=entry->segment || bus!=entry->bus ||
++       dev!=entry->device || fun!=entry->function || GuDiscoveryReentered_ || Gu.fault || Gu.bs!=bs){status=EFI_NOT_READY;break;}
++    entry->spec=spec;entry->handle=handles[i];entry->bar0=config[4];
++    memcpy(entry->config,config,sizeof(config));
++    GU_PLATFORM *ctx=&entry->ctx;ctx->bs=bs;ctx->image=Gu.image;ctx->display_check=Gu.display_check;
++    ctx->pci=pci;ctx->handle=handles[i];ctx->segment=seg;ctx->bus=bus;ctx->device=dev;ctx->function=fun;
++    ctx->board_id=spec->id;ctx->board_subsystem=spec->subsystem;ctx->expected_chip=spec->chip;
++    ctx->expected_memory=spec->memory;ctx->prom_sha256=spec->prom_sha256;ctx->card_name=spec->name;
++    ctx->bar_base=entry->bar0;ctx->is_console=entry->console;ctx->initial_config_valid=TRUE;
++    memcpy(ctx->initial_config,config,sizeof(config));found++;
+   }
+-  GuFree(handles);
+-  GuTargetCount_=found;
+-  GuLog("PCI targets registered=%zu status=%#llx\n",(size_t)found,(unsigned long long)status);
+-  if(EFI_ERROR(status))return status;
+-  if(!found)return EFI_NOT_FOUND;
+ #if !GU_MULTI_TARGET
+-  if(found!=1)return EFI_UNSUPPORTED;
++  if(status==EFI_SUCCESS && found!=1)status=EFI_UNSUPPORTED;
+ #endif
+-  return EFI_SUCCESS;
++#ifdef GU_CARD_PINS
++  if(status==EFI_SUCCESS && found!=sizeof(GuCardPins)/sizeof(GuCardPins[0]))status=EFI_UNSUPPORTED;
++#endif
++  if(status==EFI_SUCCESS && !found)status=EFI_NOT_FOUND;
++ finish:
++  if(handles && bs->FreePool(handles)!=EFI_SUCCESS)status=EFI_DEVICE_ERROR;
++  if(GuDiscoveryReentered_ || Gu.fault || Gu.bs!=bs)status=EFI_NOT_READY;
++  if(status==EFI_SUCCESS) {
++    if(found==2 && GuBefore(&pending[1],&pending[0])){GU_TARGET_ENTRY temp=pending[0];pending[0]=pending[1];pending[1]=temp;}
++    memcpy(GuTargets_,pending,sizeof(pending));GuTargetCount_=found;
++    GuRegistryBs_=bs;GuRegistryImage_=Gu.image;GuRegistryDisplay_=Gu.display_check;
++    for(UINTN i=0;i<found;i++)GuAddVolatileHandle(GuTargets_[i].handle);
++  }
++  GuDiscoveryBusy_=FALSE;
++  return status;
+ }
+-
+-VOID GuActivate(UINTN Index) {
+-  if(Index>=GuTargetCount_){Gu.fault=TRUE;return;}
+-  if(GuActive_<GU_MAX_TARGETS)GuTargets_[GuActive_].ctx=Gu;
+-  Gu=GuTargets_[Index].ctx;
+-  Gu.card_index=Index;GuActive_=Index;
++static BOOLEAN GuActiveIdentity(VOID) {
++  if(GuActive_>=GuTargetCount_)return FALSE;
++  const GU_TARGET_ENTRY *e=&GuTargets_[GuActive_];const GU_CARD_SPEC *s=e->spec;
++  return Gu.bs==GuRegistryBs_ && Gu.image==GuRegistryImage_ && Gu.display_check==GuRegistryDisplay_ &&
++    Gu.handle==e->handle && Gu.segment==e->segment && Gu.bus==e->bus && Gu.device==e->device && Gu.function==e->function &&
++    Gu.board_id==s->id && Gu.board_subsystem==s->subsystem && Gu.expected_chip==s->chip && Gu.expected_memory==s->memory &&
++    Gu.prom_sha256==s->prom_sha256 && Gu.card_name==s->name && Gu.bar_base==e->bar0 &&
++    !memcmp(Gu.initial_config,e->config,sizeof(e->config));
++}
++static BOOLEAN GuContextClean(const GU_PLATFORM *p) {
++  return !p->fault && !p->retained && !p->master_attributes_pending && !p->allocations && !p->dma_count &&
++    !p->owned && !p->armed && (!p->started || p->quiesced);
++}
++EFI_STATUS GuActivate(UINTN Index) {
++  if(Index>=GuTargetCount_){Gu.fault=TRUE;return EFI_INVALID_PARAMETER;}
++  if(GuActive_<GuTargetCount_) {
++    if(!GuActiveIdentity() || !GuContextClean(&Gu)){Gu.fault=TRUE;return EFI_NOT_READY;}
++    GuTargets_[GuActive_].ctx=Gu;
++  }
++  if(Index==GuActive_)return EFI_SUCCESS;
++  Gu=GuTargets_[Index].ctx;Gu.card_index=Index;GuActive_=Index;
++  return GuActiveIdentity()?EFI_SUCCESS:EFI_COMPROMISED_DATA;
++}
++BOOLEAN GuAnyTargetComplete(VOID) {
++  for(UINTN i=0;i<GuTargetCount_;i++)if((i==GuActive_?Gu.complete:GuTargets_[i].ctx.complete))return TRUE;
++  return FALSE;
++}
++BOOLEAN GuAllTargetsComplete(VOID) {
++  if(!GuTargetCount_ || GuTargetCount_>GU_TARGET_LIMIT)return FALSE;
++  for(UINTN i=0;i<GuTargetCount_;i++) {
++    const GU_PLATFORM *p=i==GuActive_?&Gu:&GuTargets_[i].ctx;
++    if(!p->complete || !p->post_config_valid || !GuContextClean(p) || !p->started || !p->quiesced)return FALSE;
++  }
++  return TRUE;
++}
++EFI_STATUS GuCoordinateTargets(const GU_TARGET_OPS *o) {
++  if(!o || !o->Preflight || !o->Run || !o->Verify || !GuTargetCount_ || GuTargetCount_>GU_TARGET_LIMIT)return EFI_INVALID_PARAMETER;
++  for(UINTN i=0;i<GuTargetCount_;i++){EFI_STATUS s=o->Preflight(i,o->Context);if(s!=EFI_SUCCESS || Gu.fault)return s==EFI_SUCCESS?EFI_DEVICE_ERROR:s;}
++  for(UINTN i=0;i<GuTargetCount_;i++){
++    EFI_STATUS s=o->Run(i,o->Context);
++    if(s!=EFI_SUCCESS || Gu.fault)return s==EFI_SUCCESS?EFI_DEVICE_ERROR:s;
++    if(Gu.card_index!=i || !Gu.complete || !Gu.post_config_valid || !GuContextClean(&Gu))return EFI_NOT_READY;
++  }
++  for(UINTN i=0;i<GuTargetCount_;i++){EFI_STATUS s=o->Verify(i,o->Context);if(s!=EFI_SUCCESS || Gu.fault)return s==EFI_SUCCESS?EFI_DEVICE_ERROR:s;}
++  return GuAllTargetsComplete()?EFI_SUCCESS:EFI_NOT_READY;
+ }
+ 
+ #ifdef GU_ENTRY_LATCHED
+@@ -166,11 +257,19 @@ BOOLEAN GuSelectorPhase(UINT32 Phase) {
+ VOID GuInit(EFI_BOOT_SERVICES *Bs, EFI_PCI_IO_PROTOCOL *Pci) {
+   memset(&Gu,0,sizeof(Gu)); Gu.bs=Bs; Gu.pci=Pci;
+   GuTargetCount_=0;GuActive_=(UINTN)-1;GuVolatileCount_=0;
++  memset(GuTargets_,0,sizeof(GuTargets_));memset(GuVolatile_,0,sizeof(GuVolatile_));
++  GuDiscoveryBusy_=GuDiscoveryReentered_=FALSE;
++  GuRegistryBs_=NULL;GuRegistryImage_=NULL;GuRegistryDisplay_=NULL;
+ }
+ /* The active card recorded BDF and PCI identity; bus is no longer fixed. */
+ BOOLEAN GuTargetConfig(const UINT32 *C, UINTN S, UINTN B, UINTN D, UINTN F) {
+-  return C && S==Gu.segment && B==Gu.bus && D==Gu.device && F==Gu.function &&
+-    C[0]==Gu.board_id && C[11]==Gu.board_subsystem && (C[2]>>24)==3 && !((C[3]>>16)&0x7f);
++  if(!C || (C[2]>>24)!=3 || ((C[3]>>16)&0x7f))return FALSE;
++  if(GuTargetCount_)return GuActiveIdentity() && S==Gu.segment && B==Gu.bus &&
++    D==Gu.device && F==Gu.function && C[0]==Gu.board_id && C[11]==Gu.board_subsystem;
++  /* Original direct adapter host tests do not run discovery. Their identity
++     stays compile-time pinned; no live subsystem is adopted as an authority. */
++  return S==GU_TARGET_SEGMENT && B==GU_TARGET_BUS && !D && !F &&
++    C[0]==GU_BOARD_ID && C[11]==GU_BOARD_SUBSYSTEM;
+ }
+ BOOLEAN GuSafeToReturn(VOID) {
+   return !Gu.retained && !Gu.master_attributes_pending &&
+diff --git a/internal-boot/unlock/port.h b/internal-boot/unlock/port.h
+index 3d70a3a..6239bf4 100644
+--- a/internal-boot/unlock/port.h
++++ b/internal-boot/unlock/port.h
+@@ -68,7 +68,8 @@ typedef struct {
+   UINTN card_index, segment, bus, device, function;
+   UINT32 board_id, board_subsystem, expected_chip, expected_memory, initial_config[64];
+   const char *prom_sha256, *card_name;
+-  BOOLEAN is_console, complete, entry_latched;
++  BOOLEAN is_console, complete, entry_latched, initial_config_valid, post_config_valid;
++  UINT32 post_config[64];
+   UINT32 entry_ss0, entry_ss1, selector_phase, ss1_write_consumed;
+   BOOLEAN fault, retained, started, quiesced, armed, owned, display_ok, saved;
+   BOOLEAN profile_verified, prom_verified;
+@@ -92,6 +93,18 @@ typedef struct {
+   UINT32 id, subsystem, chip, memory;
+   const char *prom_sha256, *name;
+ } GU_CARD_SPEC;
++/* Optional generated capture pins, one row per GU_CARD_TABLE row. Defining
++   GU_CARD_PINS makes the complete planned set mandatory, including console
++   ownership. Ambiguous console topology still requires wrapper integration. */
++typedef struct {
++  UINTN segment,bus,device,function;
++  UINT64 bar0;
++  BOOLEAN console;
++} GU_CARD_PIN;
++
++/* This experimental branch never registers more than two targets, even if an
++   older profile advertises a larger array. The card table remains immutable. */
++#define GU_TARGET_LIMIT 2U
+ 
+ /* Target registry: cards found by PCI enumeration, ordered so every
+    non-console card is processed before the console owner. */
+@@ -107,7 +120,18 @@ BOOLEAN GuIsVolatileHandle(EFI_HANDLE Handle);
+ EFI_STATUS GuDiscoverTargets(VOID);
+ /* Save current Gu into its slot and load the target context. Index must be
+    an enumerated card; shared fields (bs/image/display_check) are preserved. */
+-VOID GuActivate(UINTN Index);
++EFI_STATUS GuActivate(UINTN Index);
++BOOLEAN GuAnyTargetComplete(VOID);
++BOOLEAN GuAllTargetsComplete(VOID);
++/* Shared production coordinator, exercised by RAM-only host mocks. Every
++   target must pass read-only preflight before any Run callback is invoked. */
++typedef struct {
++  VOID *Context;
++  EFI_STATUS (*Preflight)(UINTN Index,VOID *Context);
++  EFI_STATUS (*Run)(UINTN Index,VOID *Context);
++  EFI_STATUS (*Verify)(UINTN Index,VOID *Context);
++} GU_TARGET_OPS;
++EFI_STATUS GuCoordinateTargets(const GU_TARGET_OPS *Ops);
+ UINT32 GuTargetId(VOID);
+ UINT32 GuTargetSub(VOID);
+ #if !defined(GU_TARGET_PCI_ID)
+diff --git a/internal-boot/unlock/tests/test-target-registry.ps1 b/internal-boot/unlock/tests/test-target-registry.ps1
+new file mode 100644
+index 0000000..cded96e
+--- /dev/null
++++ b/internal-boot/unlock/tests/test-target-registry.ps1
+@@ -0,0 +1,27 @@
++# GPL-2.0-only. Host RAM mocks only; no EFI is started and no GPU is accessed.
++param([Parameter(Mandatory)][string]$Clang,[string]$VcVars)
++$ErrorActionPreference='Stop'
++$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
++. (Join-Path $repo 'research/profile/host.ps1')
++Import-GuHostCompiler $VcVars
++$out=Join-Path $repo 'research/profile/build/dual-core-hardening'
++[void][IO.Directory]::CreateDirectory($out)
++$includes=@('-I',(Join-Path $repo 'deps/edk2/MdePkg/Include'),'-I',(Join-Path $repo 'deps/edk2/MdePkg/Include/X64'))
++$flags=@('-std=c11','-O1','-Wall','-Wextra','-Werror','-D_CRT_SECURE_NO_WARNINGS','-DGU_PROFILE_B660M_DUAL_3090TI')+$includes
++foreach($variant in @('normal','ambiguous','pins','identical-pins')) {
++  $extra=@(switch($variant) {
++    'ambiguous' {@('-DGU_TEST_AMBIGUOUS_TABLE','-Wno-unused-function')}
++    'pins' {@('-DGU_TEST_CAPTURE_PINS','-Wno-unused-function')}
++    'identical-pins' {@('-DGU_TEST_CAPTURE_PINS','-DGU_TEST_IDENTICAL_TABLE','-Wno-unused-function')}
++    default {@('-Wno-unused-function')}
++  })
++  $exe=Join-Path $out ('registry-'+$variant+'.exe')
++  & $Clang @flags @extra (Join-Path $PSScriptRoot 'test_target_registry.c') -o $exe
++  if($LASTEXITCODE -ne 0){throw "Host compile failed: $variant"}
++  & $exe
++  if($LASTEXITCODE -ne 0){throw "Host test failed: $variant"}
++}
++$unlock=Join-Path $repo 'internal-boot/unlock'
++& $Clang -target x86_64-pc-windows-msvc -std=c11 -ffreestanding -fno-builtin -fno-stack-protector -mno-red-zone -fshort-wchar -Os -Wall -Wextra -Werror -D__KERNEL__ -DGU_UEFI_PORT -DGU_PROFILE_B660M_DUAL_3090TI -DGU_EXPERIMENTAL_3090 -DGU_ENTRY_LATCHED_SS1_FULL -DGU_INTERNAL_BOOT -DGU_AUTOMATIC_BOOT -DGU_HEADLESS_RESEARCH -DGU_USB_MEDIA @includes -I (Join-Path $unlock 'compat') -c (Join-Path $unlock 'app.c') -o (Join-Path $out 'app-compile-only.obj')
++if($LASTEXITCODE -ne 0){throw 'Production app compile failed'}
++'PASS: RAM-only registry/coordinator cases and production app compile; no physical compatibility claim.'
+diff --git a/internal-boot/unlock/tests/test_target_registry.c b/internal-boot/unlock/tests/test_target_registry.c
+new file mode 100644
+index 0000000..3959855
+--- /dev/null
++++ b/internal-boot/unlock/tests/test_target_registry.c
+@@ -0,0 +1,149 @@
++/* GPL-2.0-only. Production discovery/context/coordinator in host RAM only. */
++#include "../port.h"
++#include <assert.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#ifdef GU_TEST_AMBIGUOUS_TABLE
++#undef GU_CARD_TABLE
++#define GU_CARD_TABLE \
++ {0x220310deU,0x130a7377U,0xb72000a1U,0x5ff4U,"synthetic","A"}, \
++ {0x220310deU,0x130a7377U,0xb72000a1U,0x5ff4U,"synthetic","B"}
++#endif
++#ifdef GU_TEST_IDENTICAL_TABLE
++#undef GU_CARD_TABLE
++#define GU_CARD_TABLE \
++ {0x220310deU,0x130a7377U,0xb72000a1U,0x5ff4U,"synthetic","A"}, \
++ {0x220310deU,0x130a7377U,0xb72000a1U,0x5ff4U,"synthetic","B"}
++#endif
++#ifdef GU_TEST_CAPTURE_PINS
++#define GU_CARD_PINS {0,1,0,0,0x80000000U,TRUE},{0,2,0,0,0x81000000U,FALSE}
++#endif
++#include "../port.c"
++
++typedef struct {EFI_PCI_IO_PROTOCOL io;UINT32 cfg[64];UINTN segment,bus;BOOLEAN child;} NODE;
++static NODE nodes[3];static EFI_BOOT_SERVICES services;
++static UINTN node_count,order[3];static int open_failure,reenter,drift;
++VOID GuLog(const char *format,...){(void)format;}
++static EFI_STATUS EFIAPI release(VOID *p){free(p);return EFI_SUCCESS;}
++static EFI_STATUS EFIAPI locate(EFI_LOCATE_SEARCH_TYPE t,EFI_GUID *g,VOID *key,UINTN *n,EFI_HANDLE **h) {
++  (void)t;(void)g;(void)key;*n=node_count;*h=malloc(node_count*sizeof(**h));assert(*h);
++  for(UINTN i=0;i<node_count;i++)(*h)[i]=&nodes[order[i]];
++  return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI handle(EFI_HANDLE h,EFI_GUID *g,VOID **p){(void)g;*p=&((NODE *)h)->io;return EFI_SUCCESS;}
++static EFI_STATUS EFIAPI config_read(EFI_PCI_IO_PROTOCOL *p,EFI_PCI_IO_PROTOCOL_WIDTH width,UINT32 off,UINTN count,VOID *value) {
++  NODE *node=(NODE *)p;assert(width==EfiPciIoWidthUint32 && off+count*4<=256);
++  if(reenter){reenter=0;assert(GuDiscoverTargets()!=EFI_SUCCESS);}
++  memcpy(value,(UINT8 *)node->cfg+off,count*4);return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI location(EFI_PCI_IO_PROTOCOL *p,UINTN *s,UINTN *b,UINTN *d,UINTN *f) {
++  NODE *node=(NODE *)p;*s=node->segment;*b=node->bus;*d=*f=0;return EFI_SUCCESS;
++}
++static EFI_STATUS EFIAPI opens(EFI_HANDLE h,EFI_GUID *g,EFI_OPEN_PROTOCOL_INFORMATION_ENTRY **entries,UINTN *n) {
++  (void)g;if(open_failure)return EFI_DEVICE_ERROR;
++  NODE *node=h;*entries=NULL;*n=node->child?1:0;
++  if(*n){*entries=malloc(sizeof(**entries));assert(*entries);
++    **entries=(EFI_OPEN_PROTOCOL_INFORMATION_ENTRY){(VOID *)30,(VOID *)40,EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER,1};}
++  if(drift){drift=0;node->cfg[4]^=0x1000000U;}
++  return EFI_SUCCESS;
++}
++static void setup(UINTN count) {
++  memset(nodes,0,sizeof(nodes));memset(&services,0,sizeof(services));node_count=count;
++  open_failure=reenter=drift=0;
++  services.LocateHandleBuffer=locate;services.HandleProtocol=handle;services.FreePool=release;services.OpenProtocolInformation=opens;
++  for(UINTN i=0;i<3;i++) {
++    nodes[i].io.Pci.Read=config_read;nodes[i].io.GetLocation=location;nodes[i].bus=1+i;
++    nodes[i].cfg[0]=GuCardTable[i%2].id;nodes[i].cfg[11]=GuCardTable[i%2].subsystem;
++    nodes[i].cfg[1]=3;nodes[i].cfg[2]=0x030000a1U;nodes[i].cfg[4]=0x80000000U+(UINT32)i*0x1000000U;order[i]=i;
++  }
++  GuInit(&services,NULL);Gu.image=(VOID *)99;
++}
++static void refused(void){assert(GuDiscoverTargets()!=EFI_SUCCESS);assert(GuTargetCount()==0);assert(!GuTargetHandleOf(0));}
++static void discovery_tests(void) {
++  setup(2);nodes[0].child=TRUE;order[0]=1;order[1]=0;
++  assert(GuDiscoverTargets()==EFI_SUCCESS && GuTargetCount()==2);
++  assert(GuTargetHandleOf(0)==&nodes[1] && GuTargetHandleOf(1)==&nodes[0]);
++  assert(GuTargetSpec(0)->subsystem==nodes[1].cfg[11]);
++  assert(GuDiscoverTargets()!=EFI_SUCCESS); /* Registry cannot be reselected. */
++  setup(2);order[0]=1;order[1]=0;assert(GuDiscoverTargets()==EFI_SUCCESS);
++  assert(GuTargetHandleOf(0)==&nodes[0]); /* Stable BDF order, not firmware order. */
++  setup(2);nodes[1].cfg[11]^=1;refused();
++  setup(2);nodes[1].cfg[0]=0x999910deU;refused();
++  setup(3);refused(); /* Never truncate enumeration after the second card. */
++  setup(2);nodes[1].bus=nodes[0].bus;refused();
++  setup(2);order[1]=0;refused();
++  setup(2);nodes[0].child=nodes[1].child=TRUE;refused();
++  setup(2);open_failure=1;refused();
++  setup(2);drift=1;refused();
++  setup(2);reenter=1;refused();
++  setup(1);nodes[0].cfg[1]|=4;refused();
++  setup(1);nodes[0].cfg[4]|=8;refused();
++  setup(1);nodes[0].segment=0x10000;refused();
++  setup(1);nodes[0].bus=0;refused();
++  setup(1);assert(GuDiscoverTargets()==EFI_SUCCESS && GuTargetCount()==1);
++}
++static void context_tests(void) {
++  setup(2);assert(GuDiscoverTargets()==EFI_SUCCESS);assert(GuActivate(0)==EFI_SUCCESS);
++  Gu.entry_latched=TRUE;Gu.entry_ss0=123;Gu.entry_ss1=6;Gu.selector_phase=2;Gu.ss1_write_consumed=TRUE;
++  assert(GuActivate(1)==EFI_SUCCESS);assert(!Gu.entry_latched && !Gu.ss1_write_consumed);
++  Gu.entry_ss0=456;assert(GuActivate(0)==EFI_SUCCESS && Gu.entry_ss0==123 && Gu.entry_ss1==6 && Gu.ss1_write_consumed);
++  UINT32 cfg[64];memcpy(cfg,nodes[0].cfg,sizeof(cfg));assert(GuTargetConfig(cfg,0,1,0,0));
++  assert(!GuTargetConfig(cfg,0,2,0,0));cfg[11]^=1;assert(!GuTargetConfig(cfg,0,1,0,0));
++  Gu.board_subsystem^=1;assert(GuActivate(1)!=EFI_SUCCESS && Gu.card_index==0);
++  for(int which=0;which<5;which++) {
++    setup(2);assert(GuDiscoverTargets()==EFI_SUCCESS && GuActivate(0)==EFI_SUCCESS);
++    if(which==0)Gu.dma_count=1;if(which==1)Gu.retained=TRUE;if(which==2)Gu.owned=TRUE;
++    if(which==3)Gu.master_attributes_pending=TRUE;if(which==4)Gu.armed=TRUE;
++    assert(GuActivate(1)!=EFI_SUCCESS && Gu.card_index==0);
++  }
++}
++typedef struct {int trace[8],used,fail_pre,fail_run,fail_verify;} FLOW;
++static EFI_STATUS preflight(UINTN i,VOID *context) {
++  FLOW *f=context;f->trace[f->used++]=10+(int)i;
++  if((int)i==f->fail_pre)return EFI_DEVICE_ERROR;
++  return GuActivate(i);
++}
++static EFI_STATUS run(UINTN i,VOID *context) {
++  FLOW *f=context;f->trace[f->used++]=20+(int)i;
++  EFI_STATUS s=GuActivate(i);if(s!=EFI_SUCCESS)return s;
++  if((int)i==f->fail_run)return EFI_DEVICE_ERROR;
++  Gu.started=Gu.quiesced=Gu.complete=Gu.post_config_valid=TRUE;return EFI_SUCCESS;
++}
++static EFI_STATUS verify(UINTN i,VOID *context) {
++  FLOW *f=context;f->trace[f->used++]=30+(int)i;
++  if((int)i==f->fail_verify)return EFI_DEVICE_ERROR;
++  return GuActivate(i);
++}
++static void coordinator_tests(void) {
++  for(int fail=0;fail<4;fail++) {
++    setup(2);assert(GuDiscoverTargets()==EFI_SUCCESS);
++    FLOW f={{0},0,fail==1?1:-1,fail==2?1:-1,fail==3?0:-1};
++    GU_TARGET_OPS ops={&f,preflight,run,verify};EFI_STATUS s=GuCoordinateTargets(&ops);
++    assert(f.trace[0]==10 && f.trace[1]==11);
++    if(!fail){assert(s==EFI_SUCCESS && f.used==6 && GuAllTargetsComplete());}
++    else if(fail==1){assert(s!=EFI_SUCCESS && f.used==2 && !GuAnyTargetComplete());}
++    else {assert(s!=EFI_SUCCESS && GuAnyTargetComplete());assert(f.used==(fail==2?4:5));}
++  }
++}
++static void capture_pin_tests(void) {
++  setup(2);nodes[0].child=TRUE;order[0]=1;order[1]=0;
++  assert(GuDiscoverTargets()==EFI_SUCCESS && GuTargetHandleOf(0)==&nodes[1]);
++  assert(GuActivate(0)==EFI_SUCCESS && Gu.bus==2 && Gu.board_subsystem==GuCardTable[1].subsystem);
++  setup(2);nodes[0].child=TRUE;nodes[1].bus=3;refused();
++  setup(2);nodes[0].child=TRUE;nodes[1].cfg[4]+=0x1000000U;refused();
++  setup(1);nodes[0].child=TRUE;refused();
++  setup(2);nodes[1].child=TRUE;refused();
++  puts("PASS immutable capture BDF/BAR/console/full-set pins (including identical IDs/subsystems)");
++}
++int main(void) {
++#ifdef GU_TEST_AMBIGUOUS_TABLE
++  setup(1);refused();puts("PASS ambiguous immutable table rejected before registration");
++#elif defined(GU_TEST_CAPTURE_PINS)
++  capture_pin_tests();
++#else
++  discovery_tests();context_tests();coordinator_tests();
++  puts("PASS production target discovery, exact subsystem/BDF pins, two-card bound, context isolation and all-card coordinator");
++#endif
++  return 0;
++}
+diff --git a/research/dual/analyze_pair.py b/research/dual/analyze_pair.py
+new file mode 100644
+index 0000000..10370f4
+--- /dev/null
++++ b/research/dual/analyze_pair.py
+@@ -0,0 +1,174 @@
++"""Offline validation of experimental one/two-card read-only captures.
++
++This produces private capture evidence, NEVER an arming profile, build permit or
++hardware qualification. Full driver-release/pair replay is a separate gate.
++SPDX-License-Identifier: GPL-2.0-only
++"""
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import re
++import struct
++
++REPO = Path(__file__).resolve().parents[2]
++ALLOWED = frozenset(('220410de', '220310de', '248710de', '250410de', '248410de', '24c910de'))
++COLD = (0, 0x823804, 0x118128, 0x118234, 0x110100, 0x1fa828, 0x82381c, 0x823820, 0x1183a4)
++PCI_IO = '4cf5b200-68b8-4ca5-9eec-b23e3f50029a'
++_spec = importlib.util.spec_from_file_location('dual_capture_graph', REPO / 'research/profile/capture_graph.py')
++_graph = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_graph)
++
++
++class Refused(ValueError):
++    pass
++
++
++def require(condition, message):
++    if not condition:
++        raise Refused(message)
++
++
++def record(text, prefix, pattern):
++    rows = [line for line in text.splitlines() if line.startswith(prefix)]
++    match = re.fullmatch(pattern, rows[0]) if len(rows) == 1 else None
++    require(match is not None, 'Missing, duplicate or malformed ' + prefix)
++    return match
++
++
++def address_record(text, prefix):
++    match = record(text, prefix, re.escape(prefix) + r' seg=0x([0-9a-f]{1,4}) bus=0x([0-9a-f]{1,4}) dev=0x([0-9a-f]{1,4}) fun=0x([0-9a-f]{1,4})')
++    seg, bus, dev, fun = (int(value, 16) for value in match.groups())
++    require(1 <= bus <= 255 and dev == 0 and fun == 0, 'Target is outside the reviewed endpoint layout')
++    return f'{seg:08x}:{bus:02x}:{dev:02x}.{fun:x}'
++
++
++def resource(raw, base):
++    require(len(raw) == 48, 'Incomplete BAR0 resource')
++    desc, length, kind, _, _, bits, lo, hi, translation, size = struct.unpack('<BHBBBQQQQQ', raw[:46])
++    require((desc, length, kind, bits, lo, translation, size) ==
++            (0x8a, 43, 0, 32, base, 0, 0x1000000), 'Unreviewed BAR0 resource')
++    require(hi in (base + size - 1, 0xffffff) and raw[46] == 0x79 and
++            (raw[47] == 0 or sum(raw) % 256 == 0), 'Invalid BAR0 boundary/checksum')
++
++
++def card(text, ordinal, directory, envelope):
++    bdf = address_record(text, 'probe-target')
++    require(record(text, 'cfg256 ', r'cfg256 status=0x([0-9a-f]{16})')[1] == '0000000000000000', 'PCI snapshot failed')
++    row = record(text, 'cfg dwords=', r'cfg dwords=([0-9a-f ]+)')
++    words = row[1].split()
++    require(len(words) == 64 and all(re.fullmatch('[0-9a-f]{8}', value) for value in words), 'Need 64 exact PCI dwords')
++    cfg = [int(value, 16) for value in words]
++    ident = f'{cfg[0]:08x}'
++    require(ident in ALLOWED and ident in envelope['probe_device_ids'], 'Device ID is outside the pinned kit candidates')
++    require(cfg[2] == int(envelope['class_revision'], 16) and cfg[1] & 6 == 2,
++            'Wrong PCI class/revision or MEM/BME state')
++    require(cfg[11] not in (0, 0xffffffff), 'Missing subsystem identity')
++    base = cfg[4]
++    require(base != 0 and base & 0xffffff == 0, 'BAR0 must be an aligned 32-bit 16MiB window')
++    raw = bytes.fromhex(record(text, 'pci-bar0-resource ', r'pci-bar0-resource raw=([0-9a-f]+)')[1])
++    resource(raw, base)
++    attrs = record(text, 'pci-attributes ', r'pci-attributes status=0x([0-9a-f]{16}) value=0x([0-9a-f]{16})')
++    expected = 0x200 | (0x100 if cfg[1] & 1 else 0)
++    require(int(attrs[1], 16) == 0 and int(attrs[2], 16) & 0x700 == expected, 'PCI attribute/command mismatch')
++    mmio = {}
++    for line in text.splitlines():
++        if not line.startswith('mmio '):
++            continue
++        row = re.fullmatch(r'mmio off=0x([0-9a-f]{1,8}) status=0x([0-9a-f]{1,16}) value=0x([0-9a-f]{1,8})', line)
++        require(row is not None, 'Malformed MMIO record')
++        offset, status, value = (int(value, 16) for value in row.groups())
++        require(offset not in mmio and status == 0, 'Duplicate or failed MMIO observation')
++        mmio[offset] = value
++    require(all(offset in mmio for offset in COLD), 'Incomplete cold-state observations')
++    chip, plm, g1, g2, g3, wpr, ss0, ss1, memory = (mmio[offset] for offset in COLD)
++    chips = [entry for entry in envelope['chips'] if int(entry['chip'], 16) == chip]
++    require(len(chips) == 1 and f'{memory:x}' in chips[0]['pci_memory'].get(ident, []), 'Unreviewed chip/device/VRAM tuple')
++    require((plm, g1, g2, g3, wpr) == (0xffffff8f, 0x8b8f, 0x3ff, 0x10, 0) and
++            ss1 <= 15 and ss0 not in (0xffffffff, 0x88888888) and ss0 & 0xffff0000 != 0xbadf0000,
++            'Card is not in the required power-on state')
++    name = record(text, 'prom dump=', r'prom dump=(PROM[0-9]{2}\.BIN)')[1]
++    require(name == f'PROM{ordinal:02d}.BIN', 'PROM filename does not match the BDF-ordered card ordinal')
++    digest = record(text, 'prom sha256=', r'prom sha256=([0-9a-f]{64})')[1]
++    prom = directory / name
++    require(not prom.is_symlink() and prom.is_file() and prom.stat().st_size == 0x100000, 'Need that card\'s exact 1MiB PROM file')
++    require(hashlib.sha256(prom.read_bytes()).hexdigest() == digest, 'PROM hash mismatch; do not swap cards\' ROM files')
++    return {'bdf': bdf, 'pci_id': ident, 'subsystem': f'{cfg[11]:08x}', 'chip': f'{chip:08x}',
++            'memory_mib': memory, 'bar0': base, 'pci_config': cfg, 'mmio': mmio,
++            'prom_sha256': digest, 'prom_file': name}
++
++
++def capture(path, envelope):
++    path = Path(path)
++    require(not path.is_symlink() and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024, 'Need a bounded regular capture file')
++    raw = path.read_bytes()
++    text = raw.decode('utf-8-sig').replace('\r\n', '\n')
++    require(text.splitlines().count('dual-probe-v1 max-targets=2 readonly=1') == 1, 'Need the explicit experimental dual-probe format')
++    require(not any(line.startswith('incomplete ') for line in text.splitlines()), 'Probe reported an incomplete capture')
++    try:
++        blocks = _graph.parse_handles(text)
++    except ValueError as error:
++        raise Refused(str(error)) from error
++    parts = re.findall(r'^dual-card-begin index=([0-9a-f]{4})\n(.*?)^dual-card-end index=\1\n', text, re.M | re.S)
++    require(1 <= len(parts) <= 2 and len(re.findall(r'^dual-card-(?:begin|end)', text, re.M)) == 2 * len(parts), 'Need one or two closed card records')
++    require([index for index, _ in parts] == [f'{index:04x}' for index in range(len(parts))], 'Duplicate or unordered card ordinal')
++    summary = record(text, 'probe targets=', r'probe targets=([0-9a-f]{4}) cfg-incomplete=([0-9a-f]{4})')
++    require(int(summary[1], 16) == len(parts) and int(summary[2], 16) == 0 and
++            len(re.findall(r'^probe-target ', text, re.M)) == len(parts), 'Probe cardinality disagrees with the pair records')
++    cards = [card(section, ordinal, path.parent, envelope) for ordinal, (_, section) in enumerate(parts)]
++    bdfs = [entry['bdf'] for entry in cards]
++    require(bdfs == sorted(set(bdfs)), 'Cards must have unique, sorted physical BDFs')
++    for index, entry in enumerate(cards):
++        for peer in cards[index + 1:]:
++            require(abs(entry['bar0'] - peer['bar0']) >= 0x1000000, 'Target BAR0 windows overlap')
++    graph_cards = {}
++    for block in blocks.values():
++        if PCI_IO not in block['protocols']:
++            continue
++        row = record(block['raw'], 'pci config-dwords=', r'pci config-dwords=([0-9a-f ]+)')
++        cfg = [int(value, 16) for value in row[1].split()]
++        if cfg[0] & 0xffff != 0x10de or cfg[2] >> 24 != 3:
++            continue
++        location = record(block['raw'], 'pci location-status=', r'pci location-status=0x([0-9a-f]{1,16}) segment=0x([0-9a-f]{1,16}) bus=0x([0-9a-f]{1,16}) device=0x([0-9a-f]{1,16}) function=0x([0-9a-f]{1,16})')
++        status, seg, bus, dev, fun = (int(value, 16) for value in location.groups())
++        bdf = f'{seg:08x}:{bus:02x}:{dev:02x}.{fun:x}'
++        require(status == 0 and seg <= 0xffff and 1 <= bus <= 255 and dev == 0 and fun == 0 and bdf not in graph_cards, 'Ambiguous graph PCI identity')
++        graph_cards[bdf] = cfg
++    require(set(graph_cards) == set(bdfs), 'Whole graph contains a missing, extra or different NVIDIA controller')
++    for entry in cards:
++        require(graph_cards[entry['bdf']] == entry['pci_config'][:16], 'Graph and deep capture disagree on a card')
++    return {'cards': cards, 'capture_sha256': hashlib.sha256(raw).hexdigest()}
++
++
++def analyze(first, second, envelope):
++    require(Path(first).resolve() != Path(second).resolve(), 'Two different capture files are required')
++    before, after = capture(first, envelope), capture(second, envelope)
++    require(before['cards'] == after['cards'], 'The complete installed card set changed between captures')
++    return {'schema': 'dual-capture-review-v1', 'can_unlock': False, 'can_build_write_efi': False,
++            'physical_qualification': False, 'card_count': len(before['cards']), 'cards': before['cards'],
++            'captures': [before['capture_sha256'], after['capture_sha256']],
++            'pending': ['Exact driver-code and whole-pair ownership/release replay',
++                        'Per-card actual-PROM/firmware host transaction jobs',
++                        'Supervised physical two-card boot and per-card measurements']}
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--first', required=True, type=Path)
++    parser.add_argument('--second', required=True, type=Path)
++    parser.add_argument('--output', required=True, type=Path, help='New private JSON filename; never an arming profile')
++    args = parser.parse_args(argv)
++    envelope = json.loads((REPO / 'research/profile/proven.json').read_text(encoding='utf-8'))
++    try:
++        result = analyze(args.first, args.second, envelope)
++        with args.output.open('x', encoding='utf-8') as stream:
++            json.dump(result, stream, indent=2)
++            stream.write('\n')
++    except (OSError, ValueError) as error:
++        parser.exit(1, 'Capture review refused: ' + str(error) + '\n')
++    print(f"Reviewed {result['card_count']} candidate card(s); no write build or unlock is authorized. Keep the JSON private.")
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/research/dual/build-probe.ps1 b/research/dual/build-probe.ps1
+new file mode 100644
+index 0000000..91feaf9
+--- /dev/null
++++ b/research/dual/build-probe.ps1
+@@ -0,0 +1,51 @@
++# GPL-2.0-only. Explicit experimental read-only build only; never stages or boots.
++# Separate artifact directory/manifest prevents use by the single-card pipeline.
++param([Parameter(Mandatory)][guid]$WindowsEspGuid,[string]$Clang='clang',[string]$LldLink='lld-link',
++      [string]$Python='python',[ValidateSet(1,2)][int]$MaxTargets=1,[switch]$ExperimentalDual)
++$ErrorActionPreference='Stop'
++if(!$ExperimentalDual -or $MaxTargets -ne 2){throw 'This read-only experiment requires both -ExperimentalDual and -MaxTargets 2.'}
++$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
++$boot=Join-Path $repo 'internal-boot/boot'
++. (Join-Path $repo 'research/profile/probe-manifest.ps1')
++$files=@(Get-GuGenericProbeFiles)+@('research/dual/build-probe.ps1')
++$sourceRows=@($files | ForEach-Object {[ordered]@{Path=$_;Sha256=(Get-FileHash -LiteralPath (Join-Path $repo $_)).Hash.ToLowerInvariant()}})
++$windows=@(Get-Partition | Where-Object {$_.Guid -and [guid]$_.Guid -eq $WindowsEspGuid})
++if($windows.Count -ne 1 -or !$windows[0].IsSystem){throw 'WindowsEspGuid must identify the current system EFI partition.'}
++function GuidC([guid]$Value){
++ $b=$Value.ToByteArray();$tail=($b[8..15] | ForEach-Object {'0x{0:x2}' -f $_}) -join ','
++ return ('{{0x{0:x8},0x{1:x4},0x{2:x4},{{{3}}}}}' -f [BitConverter]::ToUInt32($b,0),[BitConverter]::ToUInt16($b,4),[BitConverter]::ToUInt16($b,6),$tail)
++}
++$config=Join-Path $boot 'platform-config.h'
++$marker='/* Local USB configuration (build-usb.ps1). Internal partition unused under GU_USB_MEDIA. */'
++if((Test-Path -LiteralPath $config) -and (Get-Content -LiteralPath $config -TotalCount 1) -ne $marker){throw 'platform-config.h belongs to a different setup; preserve it before a separate USB experiment.'}
++@($marker,('#define GU_INTERNAL_PARTITION_INITIALIZER '+(GuidC ([guid]::Empty))),('#define GU_WINDOWS_PARTITION_INITIALIZER '+(GuidC $WindowsEspGuid))) | Set-Content -LiteralPath $config -Encoding ascii
++$generated=Join-Path $boot 'generated.h'
++if(!(Test-Path -LiteralPath $generated)){'/* Read-only experimental probe: no unlock child. */' | Set-Content -LiteralPath $generated -Encoding ascii}
++Push-Location -LiteralPath $boot
++try {
++ $out='build/probe-dual-experimental'
++ New-Item -ItemType Directory -Path $out -Force | Out-Null
++ $sources=@('handoff.c','diagnostic.c','../efi_runtime.c','probe.c','probe-parent.c','../unlock/sha256.c',
++   '../../research/pci-decode/efi-capture.c','../../research/pci-decode/snapshot.c')
++ $defines=@('-DGU_DIAGNOSTIC_ONLY','-DGU_DIAGNOSTIC_PROBE','-DGU_PROBE_GENERIC','-DGU_USB_PROBE',
++   '-DGU_PROBE_PARENT_BASELINE','-DGU_PROBE_AUTO_BUS','-DGU_PROBE_DUAL','-DGU_PROBE_MAX_TARGETS=2')
++ $objects=@()
++ foreach($source in $sources){
++  $obj="$out/"+[IO.Path]::GetFileNameWithoutExtension($source)+'.obj'
++  & $Clang -target x86_64-pc-windows-msvc -std=c11 -ffreestanding -fno-builtin -fno-stack-protector -mno-red-zone -fshort-wchar -Os -Wall -Wextra -Werror @defines -I ../../deps/edk2/MdePkg/Include -I ../../deps/edk2/MdePkg/Include/X64 -c $source -o $obj
++  if($LASTEXITCODE -ne 0){throw "Experimental dual compile failed: $source"};$objects+=$obj
++ }
++ & $LldLink /nologo /nodefaultlib /subsystem:efi_application /entry:efi_main /machine:x64 /base:0 /dynamicbase /nxcompat /timestamp:0 /opt:ref /opt:icf "/map:$out/PROBE.map" "/out:$out/BOOTX64.EFI" @objects
++ if($LASTEXITCODE -ne 0){throw 'Experimental dual probe link failed'}
++ & $Python -I ../unlock/verify_pe.py "$out/BOOTX64.EFI" "$out/PROBE.map" --output "$out/pe-verification.json"
++ if($LASTEXITCODE -ne 0){throw 'Experimental dual PE verification failed'}
++ $map=[IO.File]::ReadAllText((Join-Path $boot "$out/PROBE.map"))
++ if($map -match '\b(GuDecodeSync|GuDsEfiRun|GuDsEfiInitialize)\b'){throw 'Write/correction actuator reached the read-only image'}
++ foreach($row in $sourceRows){if((Get-FileHash -LiteralPath (Join-Path $repo $row.Path)).Hash.ToLowerInvariant() -cne $row.Sha256){throw 'Source changed during the experimental build'}}
++ [ordered]@{Mode='experimental-dual-read-only-probe-then-windows-usb';Format='dual-probe-v1';MaxTargets=2
++  CanUnlock=$false;CanDetach=$false;WritesFirmwareVariables=$false;HardwareTested=$false
++  Experimental=$true;Defines=$defines;ProbeBusMode='auto';TargetBus=$null
++  EfiSha256=(Get-FileHash -LiteralPath "$out/BOOTX64.EFI").Hash.ToLowerInvariant();BuiltUtc=[DateTime]::UtcNow.ToString('o');Sources=$sourceRows
++ } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$out/manifest.json" -Encoding utf8
++ Write-Output "Built $out/BOOTX64.EFI: experimental read-only capture, not an unlock. Nothing staged or booted."
++} finally {Pop-Location}
+diff --git a/research/dual/test-probe.ps1 b/research/dual/test-probe.ps1
+new file mode 100644
+index 0000000..bb8a492
+--- /dev/null
++++ b/research/dual/test-probe.ps1
+@@ -0,0 +1,44 @@
++# GPL-2.0-only. RAM-only EFI mocks and compile guards; no disk/GPU/UEFI actions.
++param([Parameter(Mandatory)][string]$Clang,[string]$VcVars)
++$ErrorActionPreference='Stop'
++$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
++. (Join-Path $repo 'research/profile/host.ps1')
++Import-GuHostCompiler $VcVars
++Push-Location -LiteralPath (Join-Path $repo 'internal-boot/boot')
++try {
++ New-Item -ItemType Directory -Path 'build/dual-tests' -Force | Out-Null
++ $includes=@('-I','../../deps/edk2/MdePkg/Include','-I','../../deps/edk2/MdePkg/Include/X64')
++ $flags=@('-DGU_DIAGNOSTIC_ONLY','-DGU_DIAGNOSTIC_PROBE','-DGU_PROBE_GENERIC','-DGU_PROBE_AUTO_BUS','-DGU_PROBE_DUAL','-DGU_PROBE_MAX_TARGETS=2')
++ & $Clang -std=c11 -O1 -Wall -Wextra -Werror -D_CRT_SECURE_NO_WARNINGS @flags @includes test_probe_dual.c probe.c ../unlock/sha256.c -o build/dual-tests/test-probe-dual.exe
++ if($LASTEXITCODE -ne 0){throw 'Dual RAM-only test compile failed'}
++ & ./build/dual-tests/test-probe-dual.exe
++ if($LASTEXITCODE -ne 0){throw 'Dual RAM-only test failed'}
++ $guardChecks=0
++ foreach($bad in @('-UGU_DIAGNOSTIC_ONLY','-UGU_PROBE_GENERIC','-UGU_DIAGNOSTIC_PROBE','-UGU_PROBE_AUTO_BUS','-DGU_FULL_UNLOCK','-DGU_EXPERIMENTAL_3090','-DGU_PROBE_MAX_TARGETS=1','-UGU_PROBE_DUAL')){
++  $messages=& $Clang -target x86_64-pc-windows-msvc -std=c11 -ffreestanding -fshort-wchar -fsyntax-only @flags $bad @includes probe.c 2>&1 | Out-String
++  if($LASTEXITCODE -eq 0 -or $messages -notmatch 'GU_PROBE_DUAL|Multiple probe targets require'){throw "Unsafe dual compile mode accepted: $bad"};$guardChecks++
++ }
++ Write-Output "PASS $guardChecks experimental dual compile guards."
++ # Invalid CLI combinations must stop before even a partition query. The valid
++ # build below uses a dummy ESP and mocked query; its EFI must never be booted.
++ $dummy=[guid]'11111111-2222-3333-4444-555555555555';$queryCounter=@{Count=0}
++ function Get-Partition {$queryCounter.Count++;[pscustomobject]@{Guid=$dummy;IsSystem=$true}}
++ $entry=Join-Path $repo 'research/profile/build-probe.ps1'
++ foreach($case in @(@{MaxTargets=2},@{ExperimentalDual=$true},@{ExperimentalDual=$true;MaxTargets=2;TargetBus=1})){
++  $refused=$false
++  try {& $entry -WindowsEspGuid $dummy @case} catch {$refused=$true}
++  if(!$refused -or $queryCounter.Count){throw 'Unsafe dual CLI reached a partition query'}
++ }
++ $linker=Join-Path (Split-Path $Clang) 'lld-link.exe'
++ $python=(Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
++ & $entry -WindowsEspGuid $dummy -Clang $Clang -LldLink $linker -Python $python -ExperimentalDual -MaxTargets 2
++ if(!$? -or $queryCounter.Count -ne 1){throw 'Dummy-ESP dual build failed'}
++ $artifact=Join-Path $repo 'internal-boot/boot/build/probe-dual-experimental'
++ $manifest=Get-Content -LiteralPath (Join-Path $artifact 'manifest.json') -Raw | ConvertFrom-Json
++ if($manifest.MaxTargets -ne 2 -or !$manifest.Experimental -or $manifest.CanUnlock -or $manifest.CanDetach -or $manifest.WritesFirmwareVariables -or $manifest.HardwareTested){throw 'Invalid experimental read-only manifest'}
++ . (Join-Path $repo 'research/profile/probe-manifest.ps1')
++ $refused=$false
++ try {Assert-GuGenericProbeManifest $repo $manifest (Join-Path $artifact 'BOOTX64.EFI')} catch {$refused=$true}
++ if(!$refused){throw 'Production single-card manifest accepted the dual experimental image'}
++ Write-Output 'PASS 5 dual CLI/build checks: dummy ESP only; nothing staged; never boot the test artifact.'
++} finally {Pop-Location}
+diff --git a/research/dual/test_analyze_pair.py b/research/dual/test_analyze_pair.py
+new file mode 100644
+index 0000000..5361e40
+--- /dev/null
++++ b/research/dual/test_analyze_pair.py
+@@ -0,0 +1,320 @@
++"""Synthetic offline pair-capture admission tests; no firmware/GPU execution.
++
++The ROM buffers and logs below are invented. Passing these checks never supplies
++driver-release replay, an arming profile or physical two-card qualification.
++"""
++import contextlib
++import copy
++import hashlib
++import importlib.util
++import io
++import json
++from pathlib import Path
++import re
++import struct
++import tempfile
++import unittest
++
++
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[1]
++
++
++def load_module(name, path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++PAIR = load_module("synthetic_pair_analyzer", HERE / "analyze_pair.py")
++LEGACY = load_module("synthetic_pair_legacy_profile", REPO / "research/profile/make-profile.py")
++ENVELOPE = json.loads((REPO / "research/profile/proven.json").read_text(encoding="utf-8"))
++PCI_IO = "4cf5b200-68b8-4ca5-9eec-b23e3f50029a"
++DRIVER = "18a031ab-b443-4d1a-a5c0-0c09261e9f71"
++OTHER = "12345678-0000-0000-0000-000000000000"
++PROM_BYTES = 0x100000
++
++
++def cards():
++    return [dict(bus=1, board=0x220410de, chip=0xb72000a1, memory=0x6000,
++                 subsystem=0x147d10de, bar=0xf5000000, prom=b"\xa1" * PROM_BYTES),
++            dict(bus=2, board=0x248410de, chip=0xb74000a1, memory=0x2000,
++                 subsystem=0x38811462, bar=0xf6000000, prom=b"\xb2" * PROM_BYTES)]
++
++
++def config(card):
++    words = [0] * 64
++    for index, value in {0: card["board"], 1: 0x00100002, 2: 0x030000a1,
++                         4: card["bar"], 11: card["subsystem"], 13: 0x40,
++                         16: 0x00014801, 18: 0x00020010, 19: 1 << 28}.items():
++        words[index] = value
++    return words
++
++
++def bar_resource(base, inclusive=False):
++    # Packed EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR (46 bytes) plus 2-byte end tag.
++    return struct.pack("<BHBBBQQQQQBB", 0x8a, 43, 0, 0, 0, 32, base,
++                       base + 0xffffff if inclusive else 0xffffff, 0, 0x1000000, 0x79, 0)
++
++
++def render(card_set, *, boot=0, graph_cards=None, graph_reverse=False, inclusive=False):
++    """Whole graph with real-format PCI_IO nodes and one shared driver agent."""
++    lines = ["SYNTHETIC FIXTURE; no hardware observations; boot=" + str(boot),
++             PAIR._graph.MARKER, "dual-probe-v1 max-targets=2 readonly=1"]
++    for ordinal, card in enumerate(card_set):
++        cfg = config(card)
++        lines += [f"dual-card-begin index={ordinal:04x}",
++                  f"probe-target seg=0x0000 bus=0x{card['bus']:04x} dev=0x0000 fun=0x0000",
++                  "cfg256 status=0x0000000000000000",
++                  "cfg dwords=" + " ".join(f"{word:08x}" for word in cfg),
++                  "pci-bar0-resource raw=" + bar_resource(card["bar"], inclusive).hex(),
++                  "pci-attributes status=0x0000000000000000 value=0x0000000000000200"]
++        values = (card["chip"], 0xffffff8f, 0x8b8f, 0x3ff, 0x10, 0, 0x03000062, 6, card["memory"])
++        lines += [f"mmio off=0x{offset:08x} status=0x0000000000000000 value=0x{value:08x}"
++                  for offset, value in zip(PAIR.COLD, values)]
++        lines += [f"prom dump=PROM{ordinal:02d}.BIN",
++                  "prom sha256=" + hashlib.sha256(card["prom"]).hexdigest(),
++                  f"dual-card-end index={ordinal:04x}"]
++    lines.append(f"probe targets={len(card_set):04x} cfg-incomplete=0000")
++    graph_cards = card_set if graph_cards is None else graph_cards
++    graph = []
++    for index, card in enumerate(graph_cards):
++        handle = 0x10 + index
++        graph.append([f"handle id=0x{handle:x}", "protocol guid=" + PCI_IO,
++                      "opens status=0x0000000000000000 count=0x1",
++                      f"open agent=0x90 controller=0x{handle:x} attributes=0x10 count=0x1",
++                      f"pci location-status=0x0 segment=0x0 bus=0x{card['bus']:x} device=0x0 function=0x0",
++                      "pci config-status=0x0000000000000000",
++                      "pci config-dwords=" + " ".join(f"{word:08x}" for word in config(card)[:16])])
++    # Unrelated protected ownership and the referenced shared driver both resolve.
++    graph += [["handle id=0x80", "protocol guid=" + OTHER,
++               "opens status=0x0000000000000000 count=0x1",
++               "open agent=0x90 controller=0x80 attributes=0x10 count=0x1"],
++              ["handle id=0x90", "protocol guid=" + DRIVER,
++               "opens status=0x0000000000000000 count=0x0"]]
++    if graph_reverse:
++        graph.reverse()
++    lines.append(f"handles status=0x0000000000000000 count=0x{len(graph):x}")
++    for block in graph:
++        lines += block
++    lines += ["capture-complete=1", "diagnostic-result status=0x0000000000000000"]
++    return "\n".join(lines) + "\n"
++
++
++class AnalyzePairTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.first = self.root / "DIAG00.TXT"
++        self.second = self.root / "DIAG01.TXT"
++        self.card_set = cards()
++        self.write_pair(self.card_set)
++
++    def write_pair(self, card_set, *, second_cards=None, **kwargs):
++        for ordinal, card in enumerate(card_set):
++            (self.root / f"PROM{ordinal:02d}.BIN").write_bytes(card["prom"])
++        self.first.write_text(render(card_set, boot=0, **kwargs), encoding="ascii")
++        self.second.write_text(render(card_set if second_cards is None else second_cards, boot=1, **kwargs), encoding="ascii")
++
++    def analyze(self):
++        return PAIR.analyze(self.first, self.second, ENVELOPE)
++
++    def reject_text(self, mutate, regex=None):
++        original = self.second.read_text(encoding="ascii")
++        changed = mutate(original)
++        self.assertNotEqual(changed, original, "test mutation must change the fixture")
++        self.second.write_text(changed, encoding="ascii")
++        try:
++            with self.assertRaisesRegex(PAIR.Refused, regex or ".+"):
++                self.analyze()
++        finally:
++            self.second.write_text(original, encoding="ascii")
++
++    def test_one_and_two_cards_remain_observations_without_build_permission(self):
++        self.assertEqual(len(bar_resource(self.card_set[0]["bar"])), 48)
++        for count in (1, 2):
++            for inclusive in (False, True):
++                with self.subTest(count=count, inclusive=inclusive):
++                    self.write_pair(self.card_set[:count], inclusive=inclusive)
++                    report = self.analyze()
++                    self.assertEqual(report["schema"], "dual-capture-review-v1")
++                    self.assertEqual(report["card_count"], count)
++                    self.assertEqual([card["bdf"] for card in report["cards"]],
++                                     [f"00000000:{index:02x}:00.0" for index in range(1, count + 1)])
++                    for key in ("can_unlock", "can_build_write_efi", "physical_qualification"):
++                        self.assertIs(report[key], False)
++                    self.assertTrue(any("driver" in item.lower() and "replay" in item.lower() for item in report["pending"]))
++                    self.assertTrue(any("physical" in item.lower() for item in report["pending"]))
++                    self.assertEqual(report["captures"], [hashlib.sha256(path.read_bytes()).hexdigest()
++                                                          for path in (self.first, self.second)])
++
++    def test_whole_graph_order_is_irrelevant_but_card_order_must_be_sorted(self):
++        self.second.write_text(render(self.card_set, boot=1, graph_reverse=True), encoding="ascii")
++        self.assertEqual(self.analyze()["card_count"], 2)
++        self.write_pair(list(reversed(self.card_set)))
++        with self.assertRaisesRegex(PAIR.Refused, "sorted physical BDF"):
++            self.analyze()
++
++    def test_identical_card_models_and_rom_hashes_still_use_distinct_bdfs(self):
++        twins = [copy.deepcopy(self.card_set[0]), copy.deepcopy(self.card_set[0])]
++        twins[1].update(bus=2, bar=0xf6000000)
++        self.write_pair(twins)
++        report = self.analyze()
++        self.assertEqual(report["card_count"], 2)
++        self.assertEqual(report["cards"][0]["pci_id"], report["cards"][1]["pci_id"])
++        self.assertEqual(report["cards"][0]["prom_sha256"], report["cards"][1]["prom_sha256"])
++        self.assertNotEqual(report["cards"][0]["bdf"], report["cards"][1]["bdf"])
++        self.assertEqual([card["prom_file"] for card in report["cards"]], ["PROM00.BIN", "PROM01.BIN"])
++        self.assertIs(report["can_build_write_efi"], False)
++
++    def test_same_capture_path_is_not_two_boot_evidence(self):
++        with self.assertRaisesRegex(PAIR.Refused, "different capture"):
++            PAIR.analyze(self.first, self.root / "." / self.first.name, ENVELOPE)
++
++    def test_swapped_missing_wrong_sized_and_modified_prom_files_fail(self):
++        first_prom = self.root / "PROM00.BIN"
++        second_prom = self.root / "PROM01.BIN"
++        first_prom.write_bytes(self.card_set[1]["prom"])
++        second_prom.write_bytes(self.card_set[0]["prom"])
++        with self.assertRaisesRegex(PAIR.Refused, "PROM hash mismatch"):
++            self.analyze()
++        for payload in (None, b"", b"x" * (PROM_BYTES - 1), b"x" * (PROM_BYTES + 1), b"x" * PROM_BYTES):
++            self.write_pair(self.card_set)
++            if payload is None:
++                second_prom.unlink()
++            else:
++                second_prom.write_bytes(payload)
++            with self.subTest(size=None if payload is None else len(payload)), self.assertRaises(PAIR.Refused):
++                self.analyze()
++
++    def test_prom_name_cannot_select_another_card_or_escape_directory(self):
++        for name in ("PROM00.BIN", "PROM.BIN", "../PROM01.BIN", "PROM02.BIN"):
++            with self.subTest(name=name):
++                self.reject_text(lambda text, name=name: text.replace("prom dump=PROM01.BIN", "prom dump=" + name))
++
++    def test_third_missing_extra_graph_and_duplicate_bdf_cards_fail(self):
++        third = dict(self.card_set[0], bus=3, bar=0xf7000000, prom=b"\xc3" * PROM_BYTES)
++        self.write_pair(self.card_set + [third])
++        with self.assertRaisesRegex(PAIR.Refused, "one or two"):
++            self.analyze()
++        self.write_pair(self.card_set)
++        for graph_cards in (self.card_set[:1], self.card_set + [third], [self.card_set[0], self.card_set[0]]):
++            self.second.write_text(render(self.card_set, graph_cards=graph_cards), encoding="ascii")
++            with self.subTest(graph_count=len(graph_cards)), self.assertRaises(PAIR.Refused):
++                self.analyze()
++        duplicate = copy.deepcopy(self.card_set)
++        duplicate[1]["bus"] = duplicate[0]["bus"]
++        self.write_pair(duplicate)
++        with self.assertRaisesRegex(PAIR.Refused, "unique, sorted"):
++            self.analyze()
++
++    def test_overlapping_bars_unsupported_id_and_unreviewed_vram_fail(self):
++        for field, value, expected in (("bar", 0xf5000000, "overlap"), ("board", 0x220610de, "Device ID"),
++                                       ("memory", 0x6000, "chip/device/VRAM"), ("chip", 0xb76000a1, "chip/device/VRAM")):
++            changed = copy.deepcopy(self.card_set)
++            changed[1][field] = value
++            self.write_pair(changed)
++            with self.subTest(field=field), self.assertRaisesRegex(PAIR.Refused, expected):
++                self.analyze()
++
++    def test_failed_duplicate_missing_mmio_and_non_cold_state_fail(self):
++        row = "mmio off=0x001183a4 status=0x0000000000000000 value=0x00002000"
++        for replacement in (row.replace("status=0x0000000000000000", "status=0x8000000000000007"),
++                            row + "\n" + row, "", "mmio off=bad"):
++            with self.subTest(replacement=replacement):
++                self.reject_text(lambda text, replacement=replacement: text.replace(row, replacement))
++        for offset, value in ((0x1fa828, 1), (0x823804, 0), (0x82381c, 0x88888888),
++                              (0x82381c, 0xffffffff), (0x82381c, 0xbadf0001), (0x823820, 16)):
++            pattern = rf"(mmio off=0x{offset:08x} status=0x0000000000000000 value=0x)[0-9a-f]+"
++            with self.subTest(offset=offset, value=value):
++                self.reject_text(lambda text, pattern=pattern, value=value:
++                                 re.sub(pattern, lambda match: match[1] + f"{value:08x}", text, count=1))
++
++    def test_complete_footer_header_card_markers_and_counts_are_strict(self):
++        mutations = [lambda text: text.replace("capture-complete=1", "capture-complete=0"),
++                     lambda text: text.replace("capture-complete=1", "capture-complete=1\ncapture-complete=1"),
++                     lambda text: text.replace("diagnostic-result status=0x0000000000000000", "diagnostic-result status=0x8000000000000007"),
++                     lambda text: text.replace("readonly=1", "readonly=0"),
++                     lambda text: text.replace("dual-probe-v1 max-targets=2 readonly=1", ""),
++                     lambda text: text.replace("dual-probe-v1 max-targets=2 readonly=1", "dual-probe-v1 max-targets=2 readonly=1\ndual-probe-v1 max-targets=2 readonly=1"),
++                     lambda text: text.replace("dual-card-end index=0001", "dual-card-end index=0000"),
++                     lambda text: text.replace("dual-card-begin index=0001", "dual-card-begin index=0002"),
++                     lambda text: text.replace("probe targets=0002 cfg-incomplete=0000", "probe targets=0001 cfg-incomplete=0000"),
++                     lambda text: text.replace("cfg-incomplete=0000", "cfg-incomplete=0001"),
++                     lambda text: text.replace("capture-complete=1", "incomplete reason=probe-MMIO status=0x8000000000000007\ncapture-complete=1")]
++        for index, mutation in enumerate(mutations):
++            with self.subTest(case=index):
++                self.reject_text(mutation)
++
++    def test_cfg_attributes_resource_and_graph_snapshots_are_required(self):
++        cfg = "cfg dwords=" + " ".join(f"{word:08x}" for word in config(self.card_set[0]))
++        resource = "pci-bar0-resource raw=" + bar_resource(self.card_set[0]["bar"]).hex()
++        mutations = [lambda text: text.replace("cfg256 status=0x0000000000000000", "cfg256 status=0x8000000000000007", 1),
++                     lambda text: text.replace(cfg, "cfg dwords=" + " ".join(cfg.split("=", 1)[1].split()[:-1]), 1),
++                     lambda text: text.replace(resource, resource[:-2], 1),
++                     lambda text: text.replace(resource, "pci-bar0-resource raw=" + (bar_resource(self.card_set[0]["bar"])[:-1] + b"\x01").hex(), 1),
++                     lambda text: text.replace("value=0x0000000000000200", "value=0x0000000000000600", 1),
++                     lambda text: text.replace("pci config-status=0x0000000000000000", "pci config-status=0x8000000000000007", 1),
++                     lambda text: text.replace("controller=0x10 attributes=0x10 count=0x1", "controller=0x99 attributes=0x10 count=0x1", 1)]
++        for index, mutation in enumerate(mutations):
++            with self.subTest(case=index):
++                self.reject_text(mutation)
++
++    def test_graph_and_deep_card_identity_disagreement_is_rejected(self):
++        graph = copy.deepcopy(self.card_set)
++        graph[1]["subsystem"] ^= 1
++        self.second.write_text(render(self.card_set, graph_cards=graph), encoding="ascii")
++        with self.assertRaisesRegex(PAIR.Refused, "Graph and deep capture disagree"):
++            self.analyze()
++
++    def test_complete_installed_set_must_agree_between_boots(self):
++        changed = copy.deepcopy(self.card_set)
++        changed[0]["subsystem"] ^= 1
++        self.write_pair(self.card_set, second_cards=changed)
++        with self.assertRaisesRegex(PAIR.Refused, "changed between captures"):
++            self.analyze()
++        changed = copy.deepcopy(self.card_set)
++        for key in ("board", "chip", "memory", "subsystem"):
++            changed[0][key], changed[1][key] = changed[1][key], changed[0][key]
++        self.write_pair(self.card_set, second_cards=changed)
++        with self.assertRaisesRegex(PAIR.Refused, "changed between captures"):
++            self.analyze()
++        self.second.write_text(render(self.card_set[:1]), encoding="ascii")
++        with self.assertRaisesRegex(PAIR.Refused, "changed between captures"):
++            self.analyze()
++
++    def test_legacy_generator_refuses_dual_header_even_single_card_with_renamed_prom(self):
++        self.write_pair(self.card_set[:1])
++        renamed = self.first.read_text().replace("prom dump=PROM00.BIN", "prom dump=PROM.BIN")
++        self.first.write_text(renamed, encoding="ascii")
++        (self.root / "PROM.BIN").write_bytes(self.card_set[0]["prom"])
++        with self.assertRaisesRegex(LEGACY.Refused, "experimental dual captures cannot authorize"):
++            LEGACY.analyze(self.first, None, ENVELOPE)
++
++    def test_cli_writes_only_non_authorizing_json_and_refuses_existing_output(self):
++        output = self.root / "private-review.json"
++        arguments = ["--first", str(self.first), "--second", str(self.second), "--output", str(output)]
++        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            PAIR.main(arguments)
++        report = json.loads(output.read_text())
++        self.assertIs(report["can_unlock"], False)
++        self.assertIs(report["can_build_write_efi"], False)
++        original = output.read_bytes()
++        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            with self.assertRaises(SystemExit) as stopped:
++                PAIR.main(arguments)
++        self.assertEqual(stopped.exception.code, 1)
++        self.assertEqual(output.read_bytes(), original)
++        invalid_output = self.root / "invalid.json"
++        self.second.write_text(self.second.read_text().replace("capture-complete=1", "capture-complete=0"))
++        arguments[-1] = str(invalid_output)
++        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            with self.assertRaises(SystemExit):
++                PAIR.main(arguments)
++        self.assertFalse(invalid_output.exists())
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/research/profile/build-probe.ps1 b/research/profile/build-probe.ps1
+index 6c7ceec..0cf831c 100644
+--- a/research/profile/build-probe.ps1
++++ b/research/profile/build-probe.ps1
+@@ -4,8 +4,15 @@
+ # Windows. It compiles only as a diagnostic build: no unlock code, GPU writes, driver release,
+ # DMA or firmware variable writes. Builds files only.
+ param([Parameter(Mandatory)][guid]$WindowsEspGuid,[string]$Clang='clang',[string]$LldLink='lld-link',[string]$Python='python',
+-      [ValidateRange(1,255)][int]$TargetBus=1)
++      [ValidateRange(1,255)][int]$TargetBus=1,[ValidateSet(1,2)][int]$MaxTargets=1,[switch]$ExperimentalDual)
+ $ErrorActionPreference='Stop'
++if($MaxTargets -ne 1 -and !$ExperimentalDual){throw 'MaxTargets 2 requires explicit -ExperimentalDual; the production probe remains single-card.'}
++if($ExperimentalDual){
++ if($MaxTargets -ne 2 -or $PSBoundParameters.ContainsKey('TargetBus')){throw 'Experimental dual probing requires -MaxTargets 2 and automatic full-BDF discovery; TargetBus is not a selector.'}
++ & (Join-Path $PSScriptRoot '../dual/build-probe.ps1') -WindowsEspGuid $WindowsEspGuid -Clang $Clang -LldLink $LldLink -Python $Python -MaxTargets 2 -ExperimentalDual
++ if(!$?){throw 'Experimental dual probe build failed'}
++ return
++}
+ $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+ $boot=Join-Path $repo 'internal-boot/boot'
+ . (Join-Path $PSScriptRoot 'probe-manifest.ps1')
+diff --git a/research/profile/make-profile.py b/research/profile/make-profile.py
+index d2035a7..4824974 100644
+--- a/research/profile/make-profile.py
++++ b/research/profile/make-profile.py
+@@ -426,6 +426,8 @@ def analyze(diag, image_dir, envelope):
+     """Everything one capture yields. image_dir=None skips the driver code hashes."""
+     raw = diag.read_bytes()
+     text = raw.decode('utf-8-sig').replace('\r\n', '\n')
++    if any(line.startswith('dual-probe-') for line in text.splitlines()):
++        fail(f'{diag.name}: experimental dual captures cannot authorize a single-card LOCAL profile')
+     complete = re.findall(r'^capture-complete=.*$', text, re.M)
+     results = re.findall(r'^diagnostic-result status=.*$', text, re.M)
+     if complete != ['capture-complete=1'] or results != ['diagnostic-result status=0x0000000000000000']:

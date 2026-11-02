@@ -1,0 +1,64 @@
+{
+  "Status": "experimental-development-not-a-usable-dual-unlock",
+  "SourceUrl": "https://github.com/jingx8885/Windows-GPU-UNLOCK.git",
+  "SourceCommit": "e27d200aaaee8de67a12bce4ab48eba58c0c8551",
+  "DevelopmentCommit": "d8d61690bbd6d37ab1677a97d22b0d88076a185b",
+  "Patch": "upstream.patch",
+  "PatchSha256": "6518961016dc674f7f68bd41dec7731881ff38fb118e5375b2657607d16c804b",
+  "Files": [
+    {
+      "Path": "internal-boot/boot/probe.c",
+      "Sha256": "e4c3da80f33c7151fe2692ec3ec62f6f478e14fe240cf1b9bfff12655934e288"
+    },
+    {
+      "Path": "internal-boot/boot/test_probe_dual.c",
+      "Sha256": "a8524c64e058e9dc3292e59108db0ccf4ae7513d755f5d4b8d0aa324dedf90a7"
+    },
+    {
+      "Path": "internal-boot/unlock/port.c",
+      "Sha256": "fe7254d0ed96731f82bfe9c25bfc4ab1ea1a5623aefa1c8bd0d743240f8ff5dc"
+    },
+    {
+      "Path": "internal-boot/unlock/port.h",
+      "Sha256": "fea8c64a8d127911d2eee81297cd646817b9624fe5b63b1715c767b327053213"
+    },
+    {
+      "Path": "internal-boot/unlock/app.c",
+      "Sha256": "d6e7b7c8bf447c156e52220ec3c10d6012943c3d852c9e70b52a1394d15ec89d"
+    },
+    {
+      "Path": "internal-boot/unlock/tests/test_target_registry.c",
+      "Sha256": "f77d40a18cb0ed434e2eb47314c97bfa951c03284449246b8600d54d64dd0f19"
+    },
+    {
+      "Path": "internal-boot/unlock/tests/test-target-registry.ps1",
+      "Sha256": "0e6c66aa9509f97d8571bf5c2380d4271c6822547a08198b30c03de5c858aab9"
+    },
+    {
+      "Path": "research/profile/build-probe.ps1",
+      "Sha256": "59e40f7da11066e0fd6f5305287d9a1eb179bcf0dbf77c0582b9dfb67403aeed"
+    },
+    {
+      "Path": "research/profile/make-profile.py",
+      "Sha256": "49c42d8cd396b6ebebe2b5de2bb2d4e21ad09a5acc466bed8bce644466a62e29"
+    },
+    {
+      "Path": "research/dual/analyze_pair.py",
+      "Sha256": "f95b80ebb50b6d0d655a0752931fc160968b02c4beea6f8aed3403f097fd29b4"
+    },
+    {
+      "Path": "research/dual/test_analyze_pair.py",
+      "Sha256": "c479729d662a723df689e672439938a5cb733e3c2c6c807e5ccbd2089ffc87c7"
+    },
+    {
+      "Path": "research/dual/build-probe.ps1",
+      "Sha256": "60849d064cd2141f948c85ee791b7f07292f58029e81701abb4df86677e3196c"
+    },
+    {
+      "Path": "research/dual/test-probe.ps1",
+      "Sha256": "b129513131e0ad65f4d63bbd8c8e90463614bc5b63fc9eb6b5618c109d15c058"
+    }
+  ],
+  "CanBuildGenericDualUnlock": false,
+  "PhysicalTwoGpuQualified": false
+}

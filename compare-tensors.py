@@ -1,6 +1,9 @@
 """Compare two matched tensor benchmarks; operator labels are not unlock proof.
 
 GPL-2.0-only. Reads JSON only; no Torch, GPU, browser or backend access.
+Schema 3 requires matched physical GPU UUID and full PCI BDF. Schema 2 remains
+readable only as a legacy schema-2 pair without UUID identity assurance; mixed
+schema pairs are refused. Each report compares one card, never aggregate GPUs.
 """
 import argparse
 import hashlib
@@ -81,11 +84,23 @@ def load_result(path):
     return result
 
 
-def gpu_settings(snapshot, label, idle=False):
+def physical_uuid(value):
+    require(isinstance(value, str) and
+            re.fullmatch(r"GPU-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value),
+            "Missing/invalid canonical physical GPU UUID")
+    require(set(value[4:].replace("-", "")) != {"0"}, "Zero GPU UUID is invalid")
+    return value
+
+
+def gpu_settings(snapshot, label, idle=False, schema=2):
     require(isinstance(snapshot, dict), label + " GPU snapshot is missing")
     for key in SETTINGS:
         string(snapshot.get(key), label + "." + key)
     require(re.fullmatch(r"[0-9A-Fa-f]{1,8}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]", snapshot["pci.bus_id"]), label + " BDF invalid")
+    if schema == 3:
+        require(re.fullmatch(r"[0-9a-f]{8}:[0-9a-f]{2}:[01][0-9a-f]\.[0-7]", snapshot["pci.bus_id"]),
+                label + " requires a canonical full PCI BDF")
+        physical_uuid(snapshot.get("uuid"))
     for key in SETTINGS[4:] + TELEMETRY:
         try:
             value = float(snapshot[key])
@@ -98,7 +113,7 @@ def gpu_settings(snapshot, label, idle=False):
         require(float(snapshot["utilization.gpu"]) <= 5, label + " idle utilization gate failed")
         require(float(snapshot["memory.used"]) <= 2048, label + " idle VRAM gate failed")
         require(float(snapshot["temperature.gpu"]) <= 65, label + " idle temperature gate failed")
-    return {key: snapshot[key] for key in SETTINGS}
+    return {key: snapshot[key] for key in SETTINGS + (("uuid",) if schema == 3 else ())}
 
 
 def check_derived(actual, expected, label):
@@ -109,8 +124,9 @@ def check_derived(actual, expected, label):
 def validate(result, label):
     require(isinstance(result, dict), "Result must be a JSON object")
     reject_bad_values(result)
-    require(type(result.get("schema_version")) is int and result["schema_version"] == 2,
-            "Only portable benchmark schema 2 is accepted")
+    require(type(result.get("schema_version")) is int and result["schema_version"] in (2, 3),
+            "Only portable benchmark schemas 2 (legacy pair) and 3 (UUID-bound pair) are accepted")
+    schema = result["schema_version"]
     require(result.get("label") == label, "Expected operator label " + label)
     require(result.get("status") == "complete", label + " benchmark is not complete")
     require(result.get("data_kind", "measured") in ("measured", "synthetic"), "Unknown data kind")
@@ -170,9 +186,18 @@ def validate(result, label):
             if env[key] != "<path redacted>":
                 require(hashes[key] == hashlib.sha256(env[key].encode()).hexdigest(),
                         "Precision environment value/hash disagree")
-    settings = gpu_settings(result.get("gpu_before"), label + " initial", idle=True)
+    settings = gpu_settings(result.get("gpu_before"), label + " initial", idle=True, schema=schema)
     require(props["name"] == settings["name"], "Torch/driver GPU identity differs")
-    require(gpu_settings(result.get("gpu_pre_measurement"), label + " premeasurement", idle=True) == settings,
+    if schema == 3:
+        require(physical_uuid(props.get("uuid")) == settings["uuid"], "Torch/driver physical GPU UUID differs")
+        selected = result.get("selected_device")
+        require(isinstance(selected, dict) and set(selected) == {"pci_bus_id", "uuid", "cuda_ordinal", "identity_method"},
+                "Selected-device UUID/BDF binding is missing or malformed")
+        require(selected["pci_bus_id"] == settings["pci.bus_id"] and
+                physical_uuid(selected["uuid"]) == settings["uuid"] and
+                selected["identity_method"] == "physical GPU UUID", "Selected-device identity differs")
+        numeric(selected["cuda_ordinal"], "Selected CUDA ordinal", 0, 1, integer=True)
+    require(gpu_settings(result.get("gpu_pre_measurement"), label + " premeasurement", idle=True, schema=schema) == settings,
             "GPU settings changed before measurement")
     records = result.get("trials")
     require(isinstance(records, list) and len(records) == trials, "Trial count is missing/incorrect")
@@ -180,7 +205,7 @@ def validate(result, label):
     for index, record in enumerate(records, 1):
         require(isinstance(record, dict) and type(record.get("trial")) is int and record["trial"] == index,
                 "Missing, duplicate or reordered trial")
-        require(gpu_settings(record.get("gpu_after"), f"{label} trial {index}") == settings,
+        require(gpu_settings(record.get("gpu_after"), f"{label} trial {index}", schema=schema) == settings,
                 "GPU settings changed during a trial")
         measurements = record.get("measurements")
         require(isinstance(measurements, list) and len(measurements) == 4 and
@@ -229,6 +254,8 @@ def compare(before, after):
     try:
         stock, stock_settings = validate(before, "stock")
         unlocked, unlocked_settings = validate(after, "unlocked")
+        require(before["schema_version"] == after["schema_version"],
+                "Cannot compare legacy schema 2 with UUID-bound schema 3; rerun both states with the same script")
         for key in ("script", "python", "torch", "protocol", "environment", "environment_sha256"):
             require(before[key] == after[key], "Comparison metadata mismatch: " + key)
         require(stock_settings == unlocked_settings, "Comparison GPU/driver/power/clock settings differ")
@@ -244,10 +271,13 @@ def compare(before, after):
                            "before_trial_tflops": stock[mode], "after_trial_tflops": unlocked[mode],
                            "before_trial_range_tflops": [min(stock[mode]), max(stock[mode])],
                            "after_trial_range_tflops": [min(unlocked[mode]), max(unlocked[mode])]}
-        return {"schema_version": 1, "status": "comparison_complete", "data_kind": kind,
+        return {"schema_version": 2, "benchmark_schema_version": before["schema_version"],
+                "status": "comparison_complete", "data_kind": kind,
                 "purpose": "Matched GEMM performance comparison; not proof of unlocked state or application speed",
                 "operator_labels": {"before": "stock", "after": "unlocked", "verified": False},
                 "validation": "All required metadata, event timings, precision flags and full-output checks passed",
+                "identity_validation": ("Matched physical GPU UUID and canonical PCI BDF" if before["schema_version"] == 3
+                                        else "Legacy schema 2: PCI/settings match only; physical UUID was not recorded"),
                 "gpu_settings": stock_settings, "protocol": before["protocol"],
                 "script": before["script"], "modes": modes}
     except (KeyError, TypeError, OverflowError, AttributeError) as exc:
