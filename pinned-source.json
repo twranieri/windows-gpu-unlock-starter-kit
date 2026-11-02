@@ -1,10 +1,18 @@
 {
-  "kit_version": "0.1.2",
+  "kit_version": "0.2.0",
   "status": "experimental-source-only-helper",
   "windows_source": {
     "url": "https://github.com/impacifist/Windows-GPU-UNLOCK.git",
     "commit": "75071aa134616c3d65ad315e0cf2810bf34b191b",
     "workflow": "research/profile/new-machine.ps1"
+  },
+  "one_or_two_gpu_source": {
+    "url": "https://github.com/jingx8885/Windows-GPU-UNLOCK.git",
+    "commit": "e27d200aaaee8de67a12bce4ab48eba58c0c8551",
+    "patch_manifest": "experimental/dual-gpu/source.json",
+    "workflow": "research/dual/new-machine.ps1",
+    "maximum_targets": 2,
+    "physical_two_gpu_validation": false
   },
   "firmware_source": {
     "url": "https://github.com/Zagitta/gpu-unlock.git",

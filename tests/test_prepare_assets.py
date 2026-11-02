@@ -150,6 +150,7 @@ class PrepareAssetsTests(unittest.TestCase):
         self.assertFalse(args.execute)
         self.assertFalse(args.download)
         with mock.patch.object(assets, "verify_repositories") as verify_repositories, \
+             mock.patch.object(assets, "git_head", return_value=assets.WINDOWS_COMMIT), \
              mock.patch.object(assets, "validate_work_dir") as validate_work_dir, \
              mock.patch.object(subprocess, "run", side_effect=AssertionError("process forbidden")), \
              mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process forbidden")), \
@@ -172,6 +173,70 @@ class PrepareAssetsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assets.run(args)
         self.assertEqual(list(self.root.iterdir()), [])
+
+
+class DualSourceReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "windows"
+        self.git = self.repo / ".git"
+        self.git.mkdir(parents=True)
+        self.meta = self.root / "reviewed"
+        self.meta.mkdir()
+        self.patch = self.meta / "upstream.patch"
+        self.patch.write_bytes(b"synthetic source-only patch")
+        self.code = self.repo / "research/dual/new-machine.ps1"
+        self.code.parent.mkdir(parents=True)
+        self.code.write_bytes(b"synthetic reviewed source")
+        self.manifest = {"SourceUrl": "https://github.com/jingx8885/Windows-GPU-UNLOCK.git",
+                         "SourceCommit": assets.DUAL_WINDOWS_COMMIT, "Patch": "upstream.patch",
+                         "PatchSha256": hashlib.sha256(self.patch.read_bytes()).hexdigest(),
+                         "Files": [{"Path": "research/dual/new-machine.ps1", "Sha256": hashlib.sha256(self.code.read_bytes()).hexdigest()}]}
+        self.receipt_path = self.git / "windows-gpu-unlock-dual-source.json"
+        self.patch_meta = mock.patch.object(assets, "DUAL_MANIFEST_DIR", self.meta)
+        self.patch_meta.start()
+        self.addCleanup(self.patch_meta.stop)
+        self.write_metadata()
+
+    def write_metadata(self):
+        import json
+        path = self.meta / "source.json"
+        path.write_text(json.dumps(self.manifest), encoding="utf-8")
+        self.receipt = {"Format": 1, "SourceUrl": self.manifest["SourceUrl"],
+                        "SourceCommit": assets.DUAL_WINDOWS_COMMIT, "PatchSha256": self.manifest["PatchSha256"],
+                        "SourceManifestSha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        self.receipt_path.write_text(json.dumps(self.receipt), encoding="utf-8")
+
+    def test_valid_receipt_is_pure_read(self):
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("No process may run")):
+            assets.verify_dual_source(self.repo)
+
+    def test_changed_patch_and_source_are_refused(self):
+        self.code.write_bytes(b"changed code")
+        with self.assertRaises(ValueError):
+            assets.verify_dual_source(self.repo)
+        self.code.write_bytes(b"synthetic reviewed source")
+        self.patch.write_bytes(b"changed patch")
+        with self.assertRaises(ValueError):
+            assets.verify_dual_source(self.repo)
+
+    def test_missing_or_boolean_receipt_is_refused(self):
+        import json
+        self.receipt["Format"] = True
+        self.receipt_path.write_text(json.dumps(self.receipt), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            assets.verify_dual_source(self.repo)
+        self.receipt_path.unlink()
+        with self.assertRaises(ValueError):
+            assets.verify_dual_source(self.repo)
+
+    def test_manifest_path_cannot_escape_source(self):
+        self.manifest["Files"][0]["Path"] = "../outside"
+        self.write_metadata()
+        with self.assertRaises(ValueError):
+            assets.verify_dual_source(self.repo)
 
 
 if __name__ == "__main__":

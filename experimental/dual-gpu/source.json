@@ -1,38 +1,174 @@
 {
-  "Status": "experimental-development-not-a-usable-dual-unlock",
+  "Status": "experimental-functional-one-or-two-gpu-software-physical-dual-unverified",
   "SourceUrl": "https://github.com/jingx8885/Windows-GPU-UNLOCK.git",
   "SourceCommit": "e27d200aaaee8de67a12bce4ab48eba58c0c8551",
-  "DevelopmentCommit": "d8d61690bbd6d37ab1677a97d22b0d88076a185b",
+  "DevelopmentCommit": "e024396df39e01074c56c5ecf985f06df75de548",
   "Patch": "upstream.patch",
-  "PatchSha256": "6518961016dc674f7f68bd41dec7731881ff38fb118e5375b2657607d16c804b",
+  "PatchSha256": "52ea8a7360c19a39273679af511bd4189b99ae1a07e7119c58d275199d333324",
   "Files": [
     {
+      "Path": ".gitignore",
+      "Sha256": "be1e89c73bc7702cffc113ed2feaa85bc8fd7b238b43d5a7829c5e25294fbd4e"
+    },
+    {
+      "Path": "internal-boot/boot/full-release.c",
+      "Sha256": "12a00a70239dd7de3e188144ae36b0bf99a8996be45eefd75e16224ee8b8c04d"
+    },
+    {
+      "Path": "internal-boot/boot/pair-policy.h",
+      "Sha256": "b2db6b5861a0a3264c7ad8aaa1915145cf03b82db29875e3f5a1a58ad7e21c71"
+    },
+    {
+      "Path": "internal-boot/boot/prepare-console.c",
+      "Sha256": "7f10a55679d61239a800e0bf6b4548ec4ccb8e6ae1a180cf7acccf2872f538a8"
+    },
+    {
       "Path": "internal-boot/boot/probe.c",
-      "Sha256": "e4c3da80f33c7151fe2692ec3ec62f6f478e14fe240cf1b9bfff12655934e288"
+      "Sha256": "58778897966990b7a391fde8850e991f47cf4f17c8764b49e51597c1e791cfb1"
+    },
+    {
+      "Path": "internal-boot/boot/test_pair_policy.c",
+      "Sha256": "f6d03e1b09bfffdde1523c3cc1faac963e5bdfd8068adab085d5d038f7e6812a"
     },
     {
       "Path": "internal-boot/boot/test_probe_dual.c",
-      "Sha256": "a8524c64e058e9dc3292e59108db0ccf4ae7513d755f5d4b8d0aa324dedf90a7"
-    },
-    {
-      "Path": "internal-boot/unlock/port.c",
-      "Sha256": "fe7254d0ed96731f82bfe9c25bfc4ab1ea1a5623aefa1c8bd0d743240f8ff5dc"
-    },
-    {
-      "Path": "internal-boot/unlock/port.h",
-      "Sha256": "fea8c64a8d127911d2eee81297cd646817b9624fe5b63b1715c767b327053213"
+      "Sha256": "4e55fc290936f7d152fc5e96c1d35eda6eb8fba0778ddecb553dd1e6aae49218"
     },
     {
       "Path": "internal-boot/unlock/app.c",
-      "Sha256": "d6e7b7c8bf447c156e52220ec3c10d6012943c3d852c9e70b52a1394d15ec89d"
+      "Sha256": "032fc1053904eb662d202b8e23a143019418ba041689933b1a8179b64eb4cdba"
     },
     {
-      "Path": "internal-boot/unlock/tests/test_target_registry.c",
-      "Sha256": "f77d40a18cb0ed434e2eb47314c97bfa951c03284449246b8600d54d64dd0f19"
+      "Path": "internal-boot/unlock/build.ps1",
+      "Sha256": "69aa654e2ff4a265e264729e78b3da137c18d493cf4264ab659fe8bb7a1fef72"
+    },
+    {
+      "Path": "internal-boot/unlock/checks.c",
+      "Sha256": "0672cc7476af79be854298ba9b3e55dfb870c22eacb702a4617a0bbdafb5a0cd"
+    },
+    {
+      "Path": "internal-boot/unlock/dual-profile.ps1",
+      "Sha256": "5437692867b188d1970bcbd553f20a5294e459e8d101011a62fd5e9a0f356727"
+    },
+    {
+      "Path": "internal-boot/unlock/headless-policy.h",
+      "Sha256": "cdd905f76da41ed9bc1eb4b5291f8d64a87ff4f192ead53b2b2bf616e1e225a3"
+    },
+    {
+      "Path": "internal-boot/unlock/local-profile.ps1",
+      "Sha256": "65da11a5500a6d98a2c1910ea8216a8f2d871624c01b4c2fa3b5b529aa86f2b4"
+    },
+    {
+      "Path": "internal-boot/unlock/machine-profile.h",
+      "Sha256": "5c0f58c7af264a30a245d81debefd6f0001a5582dcb20e8fcc3f83d5ad83220f"
+    },
+    {
+      "Path": "internal-boot/unlock/ownership.c",
+      "Sha256": "55e223e904bd43e95cab1f032822ca53766a8218faf3bb5199b0917989ca5c26"
+    },
+    {
+      "Path": "internal-boot/unlock/port.c",
+      "Sha256": "48ab1f33f87423c0194ba6633ddea1542802c6d9484803f319163aaca16b29d7"
+    },
+    {
+      "Path": "internal-boot/unlock/port.h",
+      "Sha256": "027b91559da35430be189d01580c800351efc417a4c778f5f5324e30f747a316"
     },
     {
       "Path": "internal-boot/unlock/tests/test-target-registry.ps1",
-      "Sha256": "0e6c66aa9509f97d8571bf5c2380d4271c6822547a08198b30c03de5c858aab9"
+      "Sha256": "7765c3f4967511a736248e57e6239ed80eb2fb1973f51672c1ccfdd022104696"
+    },
+    {
+      "Path": "internal-boot/unlock/tests/test_checks.c",
+      "Sha256": "2bd60e1da3bbc234d44715bf785c0d7258b8fa65a05c5bc6444af0096d90f68d"
+    },
+    {
+      "Path": "internal-boot/unlock/tests/test_port.c",
+      "Sha256": "629204083964c73fd3207cc1e26c52d429a51a873389c1a1d43b786089734966"
+    },
+    {
+      "Path": "internal-boot/unlock/tests/test_target_registry.c",
+      "Sha256": "74f011af233ec3144c13b18e30c750717ee44cd720217263911fb2dfa3476c9d"
+    },
+    {
+      "Path": "research/dual/analyze_pair.py",
+      "Sha256": "f95b80ebb50b6d0d655a0752931fc160968b02c4beea6f8aed3403f097fd29b4"
+    },
+    {
+      "Path": "research/dual/build-probe.ps1",
+      "Sha256": "60849d064cd2141f948c85ee791b7f07292f58029e81701abb4df86677e3196c"
+    },
+    {
+      "Path": "research/dual/make-console-fixture.py",
+      "Sha256": "79d9bc555fc85247450b4d455b73b3f64a28a6268fba0c5f870f37733bcd96ed"
+    },
+    {
+      "Path": "research/dual/make-pair-profile.py",
+      "Sha256": "f6616a9b3c87fa164bdf5539edd2fe1d1aba955324e4b449c98eb92919293f55"
+    },
+    {
+      "Path": "research/dual/new-machine.ps1",
+      "Sha256": "c5d4ab99157556ab58e66c3693f536ce072df51fe3639fb97717fae6034fba7f"
+    },
+    {
+      "Path": "research/dual/test-efi-controls.ps1",
+      "Sha256": "d55b114727d98da4a0a4feeba57f89333147275d9ffec361e7bb2eba511b90f0"
+    },
+    {
+      "Path": "research/dual/test-orchestration.ps1",
+      "Sha256": "63f3c05d67ea04b76c06f1a0b9b5900ad269a0632520a5ae9da8be9bf11895b7"
+    },
+    {
+      "Path": "research/dual/test-pair-policy.ps1",
+      "Sha256": "f9ab7512c54045b7c0b3cf4a88e2dabf11c95201c0459e2e42c83db2fec267e9"
+    },
+    {
+      "Path": "research/dual/test-pair-replay.ps1",
+      "Sha256": "be74a1a43619434c3d858c985a4318764dbcc2d090493bb71697ab3456832ecb"
+    },
+    {
+      "Path": "research/dual/test-probe.ps1",
+      "Sha256": "e294db2ba4603b4f8c5eece200f586980443420ef81a7836d27e4057f9197a9b"
+    },
+    {
+      "Path": "research/dual/test-profile.ps1",
+      "Sha256": "8326f15d8816645828cf06135aad096579e35d490d402c266c6a6d14e346dcc6"
+    },
+    {
+      "Path": "research/dual/test-replay-controls.ps1",
+      "Sha256": "2ea97fdccb3b586ad398b51a458ae1e3355481fcf889b71e8a86d0510209fdb9"
+    },
+    {
+      "Path": "research/dual/test_analyze_pair.py",
+      "Sha256": "c479729d662a723df689e672439938a5cb733e3c2c6c807e5ccbd2089ffc87c7"
+    },
+    {
+      "Path": "research/dual/test_dual_evidence.py",
+      "Sha256": "dce033682351d8cb6a23bb858ad3991125941840165238668e944d85cc488afb"
+    },
+    {
+      "Path": "research/dual/test_make_pair_profile.py",
+      "Sha256": "4e2f59b2f6302317d182bf8ed64917fc74286b59a180514f36ba49cbb04e7507"
+    },
+    {
+      "Path": "research/dual/test_pair_header.py",
+      "Sha256": "b2134a753a3f805ba3a2143d072e0f102ad9e91d2e5d49ae2a57557afe703bc7"
+    },
+    {
+      "Path": "research/dual/test_pair_profile.py",
+      "Sha256": "371f9cfa8efc1aac29770731164d8087ee62e5f012d2eed817444a9a40f1ff31"
+    },
+    {
+      "Path": "research/dual/test_pair_replay.c",
+      "Sha256": "58306911e76d293779dce3f12f9c30c59e1a8b030c7752c0d0625fe3ac5e7f00"
+    },
+    {
+      "Path": "research/headless/build-usb.ps1",
+      "Sha256": "1f14fec945880229c68b12c3e012285fb8b6837a64d485889630eee874915674"
+    },
+    {
+      "Path": "research/headless/stage-usb.ps1",
+      "Sha256": "0244ddc78917497960a1f95d2fa36ae1284cdc2fdf014d07da9ae9d8a84fec9b"
     },
     {
       "Path": "research/profile/build-probe.ps1",
@@ -40,25 +176,9 @@
     },
     {
       "Path": "research/profile/make-profile.py",
-      "Sha256": "49c42d8cd396b6ebebe2b5de2bb2d4e21ad09a5acc466bed8bce644466a62e29"
-    },
-    {
-      "Path": "research/dual/analyze_pair.py",
-      "Sha256": "f95b80ebb50b6d0d655a0752931fc160968b02c4beea6f8aed3403f097fd29b4"
-    },
-    {
-      "Path": "research/dual/test_analyze_pair.py",
-      "Sha256": "c479729d662a723df689e672439938a5cb733e3c2c6c807e5ccbd2089ffc87c7"
-    },
-    {
-      "Path": "research/dual/build-probe.ps1",
-      "Sha256": "60849d064cd2141f948c85ee791b7f07292f58029e81701abb4df86677e3196c"
-    },
-    {
-      "Path": "research/dual/test-probe.ps1",
-      "Sha256": "b129513131e0ad65f4d63bbd8c8e90463614bc5b63fc9eb6b5618c109d15c058"
+      "Sha256": "ee08f21f974bdb0adb6825b7df2b57c734c2e23298a5d31587036b17a2537669"
     }
   ],
-  "CanBuildGenericDualUnlock": false,
+  "CanBuildGenericDualUnlock": true,
   "PhysicalTwoGpuQualified": false
 }

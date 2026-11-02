@@ -1,24 +1,14 @@
 # Windows GPU Unlock Starter Kit
 
-**Development branch:** [Experimental one/two-GPU work](experimental/dual-gpu/README.md)
-is separate from the released single-GPU preparation workflow below. It is not
-yet a supported dual-GPU unlock or an updated release ZIP.
+**Version 0.2.0 experimental: one or two selected RTX 30-series GPUs. Physical two-card boot/recovery and performance remain unverified.**
 
-**Experimental: selected RTX 30-series configurations only. This is not an unlock for every RTX 30-series card.** RTX 20-series and RTX 40-series are outside this kit's pinned Windows workflow. See the exact PCI IDs below before downloading tools or preparing a USB.
+[Download source-only kit](dist/gpu-unlock-starter-kit-v0.2.0.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [One/two-card implementation](experimental/dual-gpu/README.md) · [Originating results](docs/ORIGINATING-RESULTS.md)
 
-[Download the starter kit](dist/gpu-unlock-starter-kit-v0.1.2.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [Originating results](docs/ORIGINATING-RESULTS.md) · [Historical report and data](research/originating-rtx3090/)
+The helper detects one or two installed candidate NVIDIA cards, prepares a read-only USB probe, generates a profile from that PC's own complete captures, runs the required host jobs and builds the exact local USB unlock package. Build and staging are separate explicit actions. The guarded one/two-card path is implemented; passing its host tests does not establish physical two-card qualification.
 
-On GitHub's ZIP file page, use **Download raw file**. The repository source is also usable directly. This helper wraps work by impacifist/Windows GPU UNLOCK and its contributors, Zagitta/gpu-unlock, and rough2515-hub/rtx3080-unlock-public; it does not claim authorship of their unlock core or upstream endorsement.
+Every installed NVIDIA display controller must be admitted. All entries use vendor `10DE`:
 
-A guided preparation helper for the **pinned, experimental Windows GPU UNLOCK USB workflow**. Version 0.1.2.
-
-The helper finds your tools, Windows boot partition and eligible USB, checks readiness, and resumes the existing capture/build/test pipeline. Each PC gets its own locally generated profile. It does not turn an arbitrary RTX card into a supported configuration.
-
-## Which cards can use this kit?
-
-These are **candidate PCI IDs**, not a guarantee that every board with the same model name will pass the firmware and platform checks. All have NVIDIA vendor ID `10DE`.
-
-| Card | Device ID accepted by this pinned workflow |
+| Card | Candidate device ID |
 |---|---|
 | RTX 3060 12GB, selected variants | `2487`, `2504` |
 | RTX 3060 Ti 8GB, selected variant | `24C9` |
@@ -26,133 +16,57 @@ These are **candidate PCI IDs**, not a guarantee that every board with the same 
 | RTX 3090 24GB | `2204` |
 | RTX 3090 Ti 24GB | `2203` |
 
-**Not admitted by this kit:** RTX 3050, RTX 3060 8GB, other RTX 3060 Ti/3070 IDs, RTX 3070 Ti, RTX 3080 (including `2206`), RTX 3080 Ti, laptop variants, and RTX 20/40/50-series cards. A newer upstream feature is not automatically included in this version.
+Identical or different admitted models can form the two-card set. An ID match is preliminary: exact chip/VRAM, PCI resources, UEFI driver code and console ownership still have to pass. Third, unsupported, unknown or ambiguous NVIDIA controllers are refused. RTX 3080 `2206`, RTX 3070 Ti, other unlisted variants, laptop variants and RTX 20/40/50 cards are outside this kit.
 
-The kit is **not locked to the originating RTX 3090**. It detects each recipient's Windows boot partition and builds a new LOCAL profile from that PC's own diagnostic captures. The name `RTX3090-UNLOCK` is an upstream USB folder name, not a requirement to reuse the original card or profile.
+## Start here
 
-The exact chip, VRAM, UEFI driver code and platform still have to pass the unchanged upstream checks. Read the [compatibility details and 0/2 troubleshooting](docs/COMPATIBILITY.md) before starting. The broader GPU support of another platform or upstream project does not establish support in this Windows kit.
+Use one existing FAT32 USB stick; 8 GB is ample. Install Git, Python 3.14+, LLVM 20.1.8 and Visual Studio C++ Build Tools with the Windows SDK. UEFI boot, Secure Boot off, the Windows volume fully decrypted with BitLocker protection off, and Fast Startup off are prerequisites. The helper reads these settings and changes none of them.
 
-## What you need
-
-- Windows x64 with UEFI boot, Git, Python **3.14+**, LLVM **20.1.8** (`clang` and `lld-link`), and Visual Studio C++ Build Tools with the Windows SDK.
-- **One FAT32 USB stick.** An existing 8 GB stick is ample; no second USB is required by this workflow. Use an existing FAT32 volume and keep a backup of its contents. This kit does not format it.
-- Secure Boot off, Windows system volume fully decrypted with BitLocker protection off, and Fast Startup off, as required by the upstream procedure. The readiness check reads these settings; it does not change them.
-- A machine accepted by the pinned [local-profile requirements](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/docs/NEW-MACHINE.en.md). The card name alone cannot establish this.
-
-Python 3.14 is needed for this kit's native Windows firmware preparation. LLVM and C++ Build Tools can be large downloads. There is no guaranteed 15-minute first setup.
-
-## 1. Get the pinned source
-
-Extract this kit to a normal local folder, then open PowerShell there. These commands use the installed tools; the kit does not install software or change PowerShell policy.
+Extract the kit and open administrator PowerShell in its folder:
 
 ```powershell
-# Preview the source downloads, then perform them.
-.\Get-Source.ps1
-.\Get-Source.ps1 -Execute
-```
-
-This obtains the exact Windows and firmware source revisions in `pinned-source.json`. Existing checkouts at another revision are left untouched. It does not run their build or unlock code.
-
-## 2. Check readiness
-
-```powershell
+.\Get-Source.ps1 -DualGpu -Execute
+.\Start.ps1 -Action Check
+py -3.14 .\prepare-assets.py --firmware-repo .\gpu-unlock-firmware-source --windows-repo .\Windows-GPU-UNLOCK-dual-dev --work-dir .\asset-work --download --execute
 .\Start.ps1 -Action Check
 ```
 
-Resolve the listed missing tools or settings. If Windows cannot read encryption or Secure Boot state without elevation, run this check from an administrator PowerShell. **UNKNOWN is not treated as a pass.** A passing preparation check still needs the later cold-boot capture checks.
+The explicit `-DualGpu` selects the reviewed one/two-card source in a separate `Windows-GPU-UNLOCK-dual-dev` folder. `Start.ps1` selects that checkout automatically when present. Existing legacy checkouts are retained. Source and patch hashes are bound by [source.json](experimental/dual-gpu/source.json). Unknown readiness states block execution.
 
-The GPU row checks the current NVIDIA PCI ID against the pinned admission data. **CANDIDATE means only that the ID is listed**, not that this PC is firmware-compatible. Unsupported, unknown or multiple NVIDIA controllers block preparation. Existing failed captures show their refusal reason rather than silently prompting more boots; see [0/2 troubleshooting](docs/COMPATIBILITY.md#why-the-capture-count-can-stay-at-02).
-
-Tools outside the usual locations can be supplied explicitly with `-Clang`, `-LldLink`, `-Python` and `-VcVars`. `-Repo` selects an existing checkout at the required revision. `-Drive E` selects a USB when more than one is attached; use your actual letter.
-
-## 3. Prepare the firmware files in Windows
+**Replace `E` with your actual FAT32 USB letter.** Save a stock benchmark before the first unlock boot, then:
 
 ```powershell
-# Preview, then download the pinned original inputs and generate the five files.
-py -3.14 .\prepare-assets.py --firmware-repo .\gpu-unlock-firmware-source --windows-repo .\Windows-GPU-UNLOCK --work-dir .\asset-work
-py -3.14 .\prepare-assets.py --firmware-repo .\gpu-unlock-firmware-source --windows-repo .\Windows-GPU-UNLOCK --work-dir .\asset-work --download --execute
-```
-
-Use a local work folder, not the USB. This runs the original pinned firmware generators, verifies their inputs and all five output sizes/hashes, and retains the NVIDIA license and notice. It does not install a Linux GPU module or Windows driver. Generated firmware stays on the recipient's PC; it is not part of this ZIP.
-
-## 4. Prepare the diagnostic USB
-
-```powershell
-.\Start.ps1 -Action Probe -Drive E
 .\Start.ps1 -Action Probe -Drive E -Execute
-```
-
-The first command shows the plan. The second builds and stages the upstream **read-only diagnostic probe**. The recipient's current Windows boot-partition GUID is detected locally. Any previous USB bootloader is preserved by the upstream staging procedure.
-
-Save your work, fully shut down, and use the motherboard's boot menu to select the UEFI USB. Let the probe return to Windows. Repeat from **another full shutdown** so there are two complete agreeing cold captures. A restart is not the required cold capture. The USB now contains private hardware evidence; keep it local.
-
-## 5. Build and test this PC's profile
-
-```powershell
-.\Start.ps1 -Action Build -Drive E
+# Fully shut down -> boot UEFI USB -> return to Windows. Repeat from another full shutdown.
 .\Start.ps1 -Action Build -Drive E -Execute
-```
-
-The unchanged upstream pipeline validates the captures, generates this PC's local profile, runs its **22 required host jobs**, and builds the USB unlock package. This action stops before staging the unlock. A refusal needs review; the helper provides no override for the upstream evidence checks.
-
-## 6. Stage and test the unlock
-
-Save the stock tensor benchmark below before your first unlock boot. Read the pinned [headless USB procedure and recovery instructions](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/docs/HEADLESS-USB.en.md), then:
-
-```powershell
-.\Start.ps1 -Action StageUnlock -Drive E
 .\Start.ps1 -Action StageUnlock -Drive E -Execute
 ```
 
-This explicitly stages the locally built wrapper, child and verified assets. It does not reboot or change boot priority. After a full shutdown, select the USB and follow the headless procedure. Inspect fresh successful transaction/cleanup and Windows-handoff logs and check performance. Passing host tests alone does not establish a successful physical boot.
+Follow the [full quickstart](docs/QUICKSTART.md) for cold boots, current-boot log checks and recovery. Commands without `-Execute` show the plan. Check is read-only. The kit does not format, change boot priority, update a driver or reboot.
 
-For recovery, fully power off and boot **Windows Boot Manager directly**, bypassing the USB. Removing the USB from a running Windows session does not revert that session's unlock.
+Both captures must contain the entire unchanged installed set. The write build requires each card's actual PROM/firmware jobs, the actual console's host jobs and whole-pair graph replay. Generated profiles, captures and driver images stay private. Unreviewed peer display-driver ownership is refused rather than bypassed.
 
-After one supervised successful boot, automatic USB-first boot can be considered in the motherboard firmware, retaining Windows Boot Manager as fallback. This kit does not promote boot priority. A generated LOCAL profile uses the USB path; do not run the fixed-profile internal installer for it.
+## Measure each physical card
 
-## Before-and-after tensor-core testing
-
-Use the same CUDA-enabled PyTorch environment for both runs. An existing application environment can be used; run its Python interpreter in place of `python` below. If needed, obtain a CUDA-enabled build through the [official PyTorch installer](https://pytorch.org/get-started/locally/). The script checks the required precision APIs and stops if the environment cannot perform the specified test.
-
-The default protocol matches our original comparison: **4096×4096 matrices, three trials, two seconds of warmup per mode, and 30 CUDA-event samples per trial/mode**. It measures:
-
-| Mode | Purpose |
-|---|---|
-| FP32 IEEE | Ordinary full-precision reference |
-| FP16 → FP32 accumulation | Tensor-core throughput |
-| BF16 → FP32 accumulation | Tensor-core throughput |
-| TF32 → FP32 accumulation | Tensor-core throughput |
-
-Each mode checks all 16,777,216 output elements against the exact all-ones product. This checks that specific matrix pattern, not every possible input or long-term stability.
-
-### Save the stock baseline before the first unlock boot
-
-Fully shut down and boot Windows Boot Manager directly, bypassing the unlock USB. Close GPU workloads and release their GPU memory. Keep the card at the same power limit and clock offsets for both measurements; leave automatic tuning off during the comparison.
+Use the same CUDA-enabled PyTorch interpreter before and after, with driver, power limit, voltage curve and offsets unchanged. Close GPU applications. Find each physical address:
 
 ```powershell
-python .\benchmark-tensors.py --label stock --output .\stock.json
+nvidia-smi --query-gpu=name,pci.bus_id --format=csv
+$tensorPython = 'C:\Path\To\TorchEnvironment\python.exe'
+& $tensorPython .\benchmark-tensors.py --gpu 00000000:01:00.0 --label stock --output .\stock-card-a.json
+# After a verified unlock boot, use the same physical address and interpreter:
+& $tensorPython .\benchmark-tensors.py --gpu 00000000:01:00.0 --label unlocked --output .\unlocked-card-a.json
+& $tensorPython .\compare-tensors.py --before .\stock-card-a.json --after .\unlocked-card-a.json --output .\comparison-card-a.json
 ```
 
-The benchmark waits for three idle samples before starting. It refuses a busy GPU or more than 2 GiB of existing GPU memory use. It changes no clocks, power limits, drivers or boot settings.
+Replace the example address. With two GPUs, `--gpu` is required. Run cards sequentially with separate filenames; results bind UUID and BDF, including identical models. The benchmark uses 4096-square matrices, three trials and 30 timed samples per mode, checking every output element for its all-ones input. It measures FP32, FP16, BF16 and TF32; it is not an application speed guarantee.
 
-### Measure after the verified unlock boot
+The historical originating RTX 3090 at 350 W on driver 617.42 measured FP16 +80.4%, BF16 +84.6%, TF32 +86.9%, FP32 -0.7%. These are single-card matrix results, not a dual-card or Stable Diffusion measurement. [Historical data](research/originating-rtx3090/).
 
-Use the supervised cold-boot USB procedure above. Check the fresh transaction, cleanup and Windows-handoff logs, then run the identical script and Python environment:
+## Recovery and sharing
 
-```powershell
-python .\benchmark-tensors.py --label unlocked --output .\unlocked.json
-python .\compare-tensors.py --before .\stock.json --after .\unlocked.json --output .\comparison.json
-```
+If a boot fails, fully power off and select Windows Boot Manager directly, bypassing the USB. Removing the USB during a Windows session does not revert that session. A failure after one card is mutated is not a proven rollback. Supervise the first boot; inspect fresh per-card transaction/cleanup and final Windows-handoff logs.
 
-The comparator checks the same GPU, driver, VBIOS, power limit, maximum-clock metadata, Python/PyTorch/CUDA libraries, precision controls, script and timing protocol. It rejects incomplete runs, failed output checks and mismatched conditions. Keep power/clock tuning unchanged yourself; ordinary telemetry does not expose every voltage-curve setting.
+Share this source-only kit, not a prepared USB or private working directory. It contains no EFI, firmware, VBIOS/PROM, driver binary or generated machine profile. See [validation](VALIDATION.txt), [notices](NOTICES.txt) and [license](LICENSE).
 
-It reports median TFLOPS before and after, speedup and percentage change for all four modes. The `stock`/`unlocked` labels describe the operator's boot choice; performance results alone do not prove the live firmware state. A driver update requires a new matched baseline and unlocked run on that driver.
-
-For reference, the originating RTX 3090 comparison at 350 W on driver 617.42 measured FP16 **+80.4%**, BF16 **+84.6%**, TF32 **+86.9%**, and FP32 **−0.7%**. These are that machine's synthetic matrix results, not promised gains for another PC or application. Both result files keep raw timing samples and full-output correctness records.
-
-See [PyTorch's CUDA precision notes](https://docs.pytorch.org/docs/stable/notes/cuda.html) for the precision controls used by the test.
-## Sharing and testing status
-
-Share the **starter ZIP**, not your working directory or prepared USB. Source downloads include upstream's historical files; the helper never stages its legacy `release/EFI` executable. The public ZIP contains no EFI executables, firmware, private captures, partition GUIDs or generated profiles.
-
-This new helper is host-tested with mocked preparation/staging and synthetic comparison fixtures. Native Windows firmware generation was also exercised using the original verified local inputs: all five outputs matched their expected hashes. The helper has not received an additional physical boot validation. The underlying pinned pipeline was physically exercised on one RTX 3090/MSI B550 system. Other machines still require their own validation. See `VALIDATION.txt`, `NOTICES.txt` and `LICENSE`.
+This helper builds on Windows GPU UNLOCK and contributors, jingx8885's PR #82, Zagitta/gpu-unlock and earlier port work. It claims neither authorship of their core nor upstream endorsement. The donor PR is unmerged work; this patched path remains experimental.

@@ -1,3 +1,30 @@
+Starter Kit 0.2.0 — experimental one/two-card validation, 2026-11-01
+
+- Complete software path: whole-set read-only captures, exact local one/two-card
+  headers, each card's actual-input jobs, full shared-graph replay, evidence-gated
+  build and separate explicit USB staging. Missing or failed jobs refuse builds.
+- 11 synthetic generator/serialization tests passed, including one/two targets,
+  shared NvGop, bound physical peer, console at BDF index 1, changed/unsupported
+  inputs, code/PROM/raw-data tamper and stale-permit invalidation. The actual-input
+  refusal runner has 19 controls for a two-card capture set; its control driver
+  was exercised on explicitly synthetic data, not physical two-card captures.
+- 15 pair-capture analyzer tests and 26 existing parser/topology/path tests passed.
+- 81 RAM-only dual probe checks, 8 compile guards, a real C-output-to-parser
+  roundtrip and 5 mocked dummy-ESP build/PE checks passed. Nothing was staged.
+- Existing single-card diagnostic regression passed: 57 diagnostic checks;
+  five 41-check named profiles; 146/150/146/150 guarded sets; generic/auto sets
+  267/267/271/271/271 plus compile guards.
+- 20 compiled whole-graph control runs passed: one card, two unbound cards,
+  bound/shared-NVIDIA peer and console second in BDF order; each exercises
+  prepare, release, wrapper, child and a runtime wrong-profile refusal.
+- Orchestration, source and runner checks use mocked hardware/pipeline services;
+  they do not demonstrate a physical dual-GPU unlock.
+
+No physical two-card capture, unlock, recovery or performance qualification was
+performed. Synthetic controls never create actual-device write permission.
+The previous single-card validation below remains historical context, not dual
+qualification. Exact code/source bindings are recorded by the release manifest.
+
 Starter Kit 0.1.2 — validation update, 2026-10-30
 
 - 49 mocked PowerShell runner checks passed, including preliminary candidate IDs,

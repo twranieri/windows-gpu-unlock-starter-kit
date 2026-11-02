@@ -1,12 +1,13 @@
 # Card compatibility
 
-This kit simplifies the pinned Windows LOCAL-profile workflow. It is reusable
-across admitted machines, but it is not a universal RTX 30-series unlock.
+Version 0.2.0 provides the guarded one/two-card Windows LOCAL flow for selected
+RTX 30-series configurations. Physical two-card boot, recovery and performance
+remain unverified. It is not a universal RTX 30-series unlock.
 
 ## Check the PCI device ID first
 
 All candidate entries have NVIDIA PCI vendor ID `10DE`. The accepted device IDs
-in pinned Windows source `75071aa134616c3d65ad315e0cf2810bf34b191b` are:
+in this kit's reviewed [source and patch](../experimental/dual-gpu/source.json) are:
 
 | Card | Device ID | VRAM |
 |---|---|---|
@@ -42,15 +43,32 @@ profile from that recipient's own captures.
 `RTX3090-UNLOCK` is the upstream USB directory name. It is used by the broader
 LOCAL workflow and does not bind the kit to the originating RTX 3090.
 
+One or two admitted NVIDIA controllers are allowed, including identical models.
+Third, unsupported, unknown or ambiguous NVIDIA controllers are refused. The
+whole installed set remains fixed across both cold captures.
+
 An accepted PCI ID is only a preliminary candidate. The exact chip/VRAM tuple,
 reviewed NVIDIA UEFI driver code, PCI resources, console ownership and other
-firmware/platform checks must also pass. Two complete, agreeing captures from
-separate full shutdowns and all 22 actual-input host jobs remain required.
-Passing those host jobs is still not a physical boot success report.
+firmware/platform checks must also pass. Two complete, agreeing whole-set captures from
+separate full shutdowns remain required. The actual console has 22 required
+host jobs; a nonconsole peer has 11 applicable jobs; three pair jobs bind the
+entire configuration. These jobs use each card's actual PROM/firmware fixtures
+and the complete shared ownership graph. Passing them is not physical boot
+qualification.
 
-The authoritative requirements are in the [pinned upstream new-machine
+The current peer route admits unbound peers or reviewed NVIDIA-only peer
+ownership. Active unreviewed EDID/text/graphics/combo consumers on peer display
+children are refused at profile generation. Adding a candidate ID does not
+implement a new driver-release route. A failure after the first card is mutated
+is not a demonstrated rollback.
+
+The legacy single-card requirements are in the [pinned upstream new-machine
 guide](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/docs/NEW-MACHINE.en.md)
-and [pinned admission data](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/research/profile/proven.json).
+and [legacy admission data](https://github.com/impacifist/Windows-GPU-UNLOCK/blob/75071aa134616c3d65ad315e0cf2810bf34b191b/research/profile/proven.json).
+
+The reviewed one/two-card additions and exact source hashes are described in
+[the implementation guide](../experimental/dual-gpu/README.md). The kit keeps
+its six-device scope even where the donor source contains additional IDs.
 
 ## Why the capture count can stay at 0/2
 

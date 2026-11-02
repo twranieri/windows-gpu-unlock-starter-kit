@@ -1,105 +1,41 @@
-# Experimental one/two-GPU development
+# Experimental one/two-GPU flow
 
-**Development branch, not a supported dual-GPU unlock release.** The normal
-`Start.ps1` workflow remains single-NVIDIA-GPU. This directory contains the
-separate source experiment and its reproducible patch; it does not bypass that
-production gate or automatically stage an unlock.
+Version 0.2.0 implements the guarded capture -> local profile -> actual-input host tests -> build -> explicit staging path for **one or two** candidate NVIDIA cards. Physical two-card boot/recovery and performance remain unverified. Use the [step-by-step guide](../../docs/QUICKSTART.md).
 
-The intended target is one or two admitted GPUs, including different models or
-two identical models. The candidate PCI IDs remain `2204`, `2203`, `2487`,
-`2504`, `2484`, and `24C9` with vendor `10DE`. Exact chip/VRAM/firmware/platform
-checks still apply. Third or unrecognized NVIDIA display controllers are refused.
-
-## Implemented
-
-- Explicit read-only one/two-card probe. Both candidate resource/identity
-  checks finish before deep capture, targets are ordered by full PCI address,
-  and each card gets a separate `PROM00.BIN` / `PROM01.BIN`.
-- Offline two-capture reviewer verifies each complete card record, PROM hash,
-  cold state, resources and full-graph PCI identity. It never authorizes a write
-  build and refuses changes in the installed set between captures.
-- Hardening of the upstream PR #82 runtime: exact immutable subsystem matching,
-  bounded target discovery, isolated per-card contexts and all-target preflight
-  before sequential attempts. See the patch and validation record for limits.
-- Per-GPU tensor tests select a physical PCI address and match CUDA by UUID.
-  Two identical models and reversed CUDA ordering are covered by mock tests.
-
-## Prepare the isolated source
+The exact preliminary IDs are vendor `10DE` with device `2204`, `2203`, `2487`, `2504`, `2484` or `24C9`. Identical or different admitted models are allowed. Third, unsupported, ambiguous or unknown NVIDIA controllers are refused; matching IDs still need exact chip/VRAM, firmware-code, resources and ownership checks. [Compatibility](../../docs/COMPATIBILITY.md).
 
 From the kit root:
 
 ```powershell
-.\experimental\dual-gpu\Get-Source.ps1
-.\experimental\dual-gpu\Get-Source.ps1 -Execute
+.\Get-Source.ps1 -DualGpu -Execute
+.\Start.ps1 -Action Check
+py -3.14 .\prepare-assets.py --firmware-repo .\gpu-unlock-firmware-source --windows-repo .\Windows-GPU-UNLOCK-dual-dev --work-dir .\asset-work --download --execute
+.\Start.ps1 -Action Check
+# Replace E with the actual existing FAT32 USB:
+.\Start.ps1 -Action Probe -Drive E -Execute
+# Two separate full shutdown -> UEFI USB -> Windows boots, with cards/slots unchanged.
+.\Start.ps1 -Action Build -Drive E -Execute
+.\Start.ps1 -Action StageUnlock -Drive E -Execute
 ```
 
-This obtains the pinned contributor source and applies the SHA-256-bound patch
-in a separate `Windows-GPU-UNLOCK-dual-dev` directory. It does not install a
-driver, change settings, build, stage a USB or boot anything. Existing production
-checkouts and unknown destinations are not overwritten.
+Save stock measurements before the first unlock boot. The [quickstart](../../docs/QUICKSTART.md) includes exact per-card benchmark selection, fresh-log verification and Windows Boot Manager recovery. No command above changes security settings, formats a USB, promotes boot priority or reboots.
 
-The experimental probe builder is
-`Windows-GPU-UNLOCK-dual-dev/research/dual/build-probe.ps1`. It requires both
-`-ExperimentalDual -MaxTargets 2`, the recipient's own Windows ESP GUID and the
-normal LLVM 20.1.8/Python tool paths. Its output is a diagnostic EFI only, with a
-separate non-unlock manifest. No EFI/firmware/driver binaries are distributed.
-The existing single-card build/staging route does not accept its manifest.
+## What the source binds
 
-Keep both installed cards and their slots unchanged across two full-shutdown
-captures. Keep the full logs, per-card PROM files and driver-image dumps private.
-The offline reviewer is:
+The acquisition helper applies the reviewed hash-bound patch to the pinned PR #82 source in a separate `Windows-GPU-UNLOCK-dual-dev` folder. See [source.json](source.json). Start selects it automatically when present; the legacy source remains available separately.
 
-```powershell
-python .\Windows-GPU-UNLOCK-dual-dev\research\dual\analyze_pair.py --first C:\PrivateCaptures\DIAG00.TXT --second C:\PrivateCaptures\DIAG01.TXT --output C:\PrivateCaptures\pair-review.json
-```
+The read-only probe orders targets by full physical PCI address, validates both candidate resource envelopes before deep capture and stores separate `PROM00.BIN`/`PROM01.BIN` files. Each boot records the complete shared ownership graph. Two whole-set agreeing cold captures are required, never one capture per card.
 
-The reviewer intentionally reports `can_unlock: false` and
-`can_build_write_efi: false`. Two files alone do not prove separate cold boots.
+The generator derives the actual console route, immutable per-card identity/configuration/PROM/driver fingerprints and full child paths. The console's 22 host jobs, a peer's 11 applicable jobs and three pair jobs must pass against the exact source, headers and private fixture bytes before a write build. Whole-graph replay preserves peer and unrelated handles/ownership. An unbound peer or reviewed NVIDIA-only peer ownership is admitted; active unreviewed EDID/text/graphics/combo peer consumers are refused. No originating PC profile or donor fixed motherboard profile is substituted.
 
-## Measure each card separately
+The offline `analyze_pair.py` is an observation reviewer and deliberately returns `can_unlock: false`. The complete pipeline uses separate exact-input test/build evidence; an observation report is not a build permit. Firmware transactions run sequentially. Final wrapper handoff requires every target's completed state; a partial failure does not establish rollback of an earlier card.
 
-Find the actual addresses with:
+Private captures, driver images, PROMs, generated headers and test evidence remain local. Only source and reproducible source patches are distributed.
 
-```powershell
-nvidia-smi --query-gpu=name,pci.bus_id --format=csv
-```
+## Validation limits
 
-Example using a CUDA-enabled Python environment; replace the address with the
-actual card's address and use different result filenames for the other card:
-
-```powershell
-python .\benchmark-tensors.py --gpu 00000000:2b:00.0 --label stock --output stock-card-a.json
-python .\benchmark-tensors.py --gpu 00000000:2b:00.0 --label unlocked --output unlocked-card-a.json
-python .\compare-tensors.py --before stock-card-a.json --after unlocked-card-a.json --output comparison-card-a.json
-```
-
-Only use the `unlocked` label after independently verifying that card's boot
-transaction. Measurements and labels are not proof of unlock state. Schema-3
-results bind both physical UUID and BDF. Legacy schema-2 pairs remain readable
-with weaker identity assurance; mixed schemas are refused. The matrix timing
-and precision protocol is unchanged. Run one card at a time.
-
-## Still required before this becomes a usable dual-GPU unlock kit
-
-The donor implementation is for specific B660M systems; it is not an ASUS
-X570-Pro / EVGA 3090 / ASUS 3060 profile. Do not select its B660M profile for a
-different machine.
-
-Generic two-card LOCAL profile generation and per-machine evidence must bind
-both captured identities, resources, firmware images and the actual console
-route. Whole-pair driver-release/shared-agent replay and final wrapper handoff
-verification must be completed. Actual-PROM transaction jobs and a supervised
-physical two-card boot remain required. A failure after the first card is
-mutated cannot be described as a proven rollback.
-
-The connected development PC has one RTX 3090, so two-card tests here are mocks.
-No physical dual-card unlock, recovery or performance gain is claimed. Production
-hardware support has not been expanded by publishing this branch.
+RAM-only controls cover one card, two unbound/bound peers, shared NVIDIA agents and the console appearing second in BDF order. Per-GPU benchmark selection binds UUID/BDF, including identical models. These controls do not supply physical dual-card qualification. The connected development PC has one RTX 3090; no physical dual-card gain or recovery result is claimed.
 
 ## Credits
 
-Based on [Windows GPU UNLOCK](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK),
-[jingx8885's PR #82](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/82)
-at `e27d200aaaee8de67a12bce4ab48eba58c0c8551`, and
-[Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock). The donor runtime is
-unmerged upstream work. GPL-2.0-only and upstream notices continue to apply.
+Based on Windows GPU UNLOCK and contributors, [jingx8885's PR #82](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/82) at `e27d200aaaee8de67a12bce4ab48eba58c0c8551`, and [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock). The donor runtime is unmerged upstream work. GPL-2.0-only and upstream notices apply; no endorsement is claimed.

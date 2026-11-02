@@ -1,5 +1,12 @@
 # Changes
 
+## 0.2.0 — 2026-11-01 (experimental)
+
+- Add the complete reviewed one/two-card capture, per-machine profile, applicable actual-input host-test, build and explicit staging pipeline in an isolated source checkout.
+- Preserve full shared ownership graphs; bind each target's PCI identity/resources, PROM, driver code, paths and final state. Refuse third/unknown/unsupported cards and unreviewed peer ownership.
+- Add physical UUID/BDF selection and separate measurements for each GPU, including identical models.
+- Keep the exact six candidate device IDs; no universal RTX 30-series support is claimed. Physical two-card boot/recovery and performance remain unverified.
+
 ## 0.1.2 — 2026-10-30
 
 - Put the exact candidate PCI IDs and excluded RTX 30-series models in the README and quickstart; add a compatibility and diagnostic guide.

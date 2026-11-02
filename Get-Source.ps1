@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
     [string]$Destination = $PSScriptRoot,
-    [switch]$Execute
+    [switch]$Execute,
+    [switch]$DualGpu
 )
 $ErrorActionPreference = 'Stop'
 $repositories = @(
@@ -16,6 +17,21 @@ if (!(Test-Path -LiteralPath $destinationPath -PathType Container)) {
 }
 if ((Get-Item -LiteralPath $destinationPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
     throw 'Choose a normal local folder, not a reparse point.'
+}
+$usePaired=[bool]$DualGpu
+if(!$usePaired) {
+    $manifestPath=Join-Path $PSScriptRoot 'experimental/dual-gpu/source.json'
+    if(Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $capability=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $usePaired=($capability.CanBuildGenericDualUnlock -is [bool] -and $capability.CanBuildGenericDualUnlock)
+    }
+}
+if($usePaired) {
+    & (Join-Path $PSScriptRoot 'experimental/dual-gpu/Get-Source.ps1') -Destination $destinationPath -Execute:$Execute
+    if(!$?){throw 'Reviewed one/two-card source preparation did not complete.'}
+    # The patched core replaces the legacy checkout for this route; firmware
+    # source acquisition remains the same independently pinned public repository.
+    $repositories=@($repositories | Where-Object Name -ne 'Windows-GPU-UNLOCK')
 }
 $git = Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
 foreach ($repository in $repositories) {

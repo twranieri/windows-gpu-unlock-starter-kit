@@ -17,6 +17,8 @@ import tempfile
 
 FIRMWARE_COMMIT = "0ebdb1c6308b6a2072be5bf04513472942541956"
 WINDOWS_COMMIT = "75071aa134616c3d65ad315e0cf2810bf34b191b"
+DUAL_WINDOWS_COMMIT = "e27d200aaaee8de67a12bce4ab48eba58c0c8551"
+DUAL_MANIFEST_DIR = Path(__file__).resolve().parent / "experimental/dual-gpu"
 INPUT_SPECS = {
     "NVIDIA-kernel-module-source-610.43.03.tar.xz": "7e118923c7a23edc36114d63273a46e3e04e9af98695a42203e7ac2dfe9fc1dc",
     "nvidia-utils-610.43.03-1-x86_64_v3.pkg.tar.zst": "e17e7c92eeffa178b0fe1f40eb17a47095f8fc3ce4a77bf115cf5bd5a4df86e9",
@@ -97,8 +99,12 @@ def verify_repositories(firmware, windows):
     # allow ordinary Git autocrlf checkout while rejecting changed generator code.
     for repo, commit, files in ((firmware, FIRMWARE_COMMIT, FIRMWARE_FILES),
                                 (windows, WINDOWS_COMMIT, WINDOWS_FILES)):
-        if git_head(repo) != commit:
-            raise ValueError("Repository HEAD is not the required pin: " + str(repo))
+        head = git_head(repo)
+        if head != commit:
+            if repo == windows and head == DUAL_WINDOWS_COMMIT:
+                verify_dual_source(repo)
+            else:
+                raise ValueError("Repository HEAD is not the required pin: " + str(repo))
         for relative, expected in files.items():
             path = regular(repo / relative)
             if not path.resolve().is_relative_to(repo.resolve()):
@@ -106,6 +112,41 @@ def verify_repositories(firmware, windows):
             actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
             if actual != expected:
                 raise ValueError("Tracked source/spec changed: " + relative)
+
+
+def verify_dual_source(repo):
+    """Pure-read receipt/file checks; no Git process or credential access."""
+    manifest_path = regular(DUAL_MANIFEST_DIR / "source.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    if manifest.get("SourceCommit") != DUAL_WINDOWS_COMMIT or manifest.get("SourceUrl") != "https://github.com/jingx8885/Windows-GPU-UNLOCK.git" or manifest.get("Patch") != "upstream.patch":
+        raise ValueError("Unreviewed one/two-card source manifest")
+    patch = regular(DUAL_MANIFEST_DIR / "upstream.patch")
+    if digest(patch) != manifest.get("PatchSha256"):
+        raise ValueError("One/two-card source patch changed")
+    git = repo / ".git"
+    if git.is_file():
+        line = git.read_text().strip()
+        if not line.startswith("gitdir: "):
+            raise ValueError("Invalid Git directory")
+        git = (repo / line[8:]).resolve()
+    receipt = json.loads(regular(git / "windows-gpu-unlock-dual-source.json").read_text(encoding="utf-8-sig"))
+    expected = {"Format": 1, "SourceUrl": manifest["SourceUrl"], "SourceCommit": DUAL_WINDOWS_COMMIT,
+                "PatchSha256": manifest["PatchSha256"], "SourceManifestSha256": digest(manifest_path)}
+    if type(receipt.get("Format")) is not int or receipt != expected:
+        raise ValueError("One/two-card source receipt does not match this kit")
+    files = manifest.get("Files")
+    if not isinstance(files, list) or not 1 <= len(files) <= 1024:
+        raise ValueError("Missing one/two-card source inventory")
+    seen = set()
+    for row in files:
+        name = row.get("Path", "")
+        parts = name.replace("\\", "/").split("/")
+        if not name or "\\" in name or ":" in name or any(part in ("", ".", "..", ".git") for part in parts) or name.lower() in seen:
+            raise ValueError("Unsafe one/two-card source path")
+        seen.add(name.lower())
+        file = regular(repo / name)
+        if not file.resolve().is_relative_to(repo.resolve()) or digest(file) != row.get("Sha256"):
+            raise ValueError("One/two-card source file changed: " + name)
 
 
 def validate_work_dir(work):
@@ -239,7 +280,7 @@ def run(args):
     state = output_state(output)
     report = {"mode": "execute" if args.execute else "plan", "output": str(output),
               "output_state": state, "download_requested": args.download,
-              "firmware_commit": FIRMWARE_COMMIT, "windows_commit": WINDOWS_COMMIT,
+              "firmware_commit": FIRMWARE_COMMIT, "windows_commit": git_head(windows),
               "actions": ["verify two pinned input hashes", "run unchanged upstream generators",
                           "verify five assets and preserve license/notice", "publish a new complete directory"]}
     if state == "valid":

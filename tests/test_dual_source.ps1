@@ -91,6 +91,23 @@ try {
     $script:UDCalls=@()
     $null=Invoke-UDGetSource -Destination $case.Parent -SourceRoot $case.Source -Execute
     Assert-True ((Count-UDCalls clone) -eq 0 -and (Count-UDCalls checkout) -eq 0 -and (Count-UDCalls config) -eq 0 -and (Count-UDCalls apply -MutationOnly) -eq 0) 'Matching existing checkout was modified.'
+    $receiptPath=Join-Path $case.Target '.git/windows-gpu-unlock-dual-source.json'
+    $receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    Assert-True ($receipt.Format -eq 1 -and $receipt.SourceCommit -ceq $script:UDBaseCommit -and
+        $receipt.SourceManifestSha256 -ceq (Get-FileHash -LiteralPath (Join-Path $case.Source 'source.json')).Hash.ToLowerInvariant()) 'Prepared source receipt did not bind the reviewed base/manifest.'
+    $sourceHash=(Get-FileHash -LiteralPath (Join-Path $case.Target 'existing.c')).Hash
+    Remove-Item -LiteralPath $receiptPath
+    $script:UDCalls=@()
+    $null=Invoke-UDGetSource -Destination $case.Parent -SourceRoot $case.Source
+    Assert-True (!(Test-Path -LiteralPath $receiptPath)) 'Plan mode created a source receipt.'
+    $null=Invoke-UDGetSource -Destination $case.Parent -SourceRoot $case.Source -Execute
+    Assert-True ((Test-Path -LiteralPath $receiptPath) -and (Get-FileHash -LiteralPath (Join-Path $case.Target 'existing.c')).Hash -ceq $sourceHash -and
+        (Count-UDCalls clone) -eq 0 -and (Count-UDCalls apply -MutationOnly) -eq 0) 'Receipt adoption changed source bytes or applied the patch again.'
+    $receiptBytes=[IO.File]::ReadAllBytes($receiptPath)
+    Write-UDText $receiptPath '{}'
+    Assert-Refused {Invoke-UDGetSource -Destination $case.Parent -SourceRoot $case.Source -Execute} 'Mismatched existing receipt was accepted.'
+    Assert-True ((Get-Content -LiteralPath $receiptPath -Raw) -ceq '{}') 'Existing mismatched receipt was overwritten.'
+    [IO.File]::WriteAllBytes($receiptPath,$receiptBytes)
 
     foreach($failure in @('head','missing','changed','unknown','extra-diff','missing-diff','unstaged','reverse')) {
         $case=New-UDCase

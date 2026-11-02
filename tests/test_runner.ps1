@@ -51,8 +51,14 @@ function Get-UGReadiness { [pscustomobject]@{Checks=@((New-UGCheck 'Source' 'BLO
 function Invoke-UGPipeline { Write-Output 'UNEXPECTED_PIPELINE'; exit 99 }
 Invoke-UGMain @{Action='Probe';Execute=`$true;ReportPath=`$null}
 "@
-$childResult=@(& (Get-Process -Id $PID).Path -NoProfile -Command $childCheck 2>&1)
-$childExit=$LASTEXITCODE
+$previousErrorPreference=$ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 treats the intentionally failing child's stderr as
+    # NativeCommandError; capture it so the assertions can assess that refusal.
+    $ErrorActionPreference='Continue'
+    $childResult=@(& (Get-Process -Id $PID).Path -NoProfile -Command $childCheck 2>&1)
+    $childExit=$LASTEXITCODE
+} finally {$ErrorActionPreference=$previousErrorPreference}
 Assert-True ($childExit -ne 0 -and $childExit -ne 99 -and ($childResult -join ' ') -notmatch 'UNEXPECTED_PIPELINE') 'Blocked -Execute CLI did not fail without calling the pipeline.'
 $ids=@(ConvertFrom-UGCandidateEnvelope ([pscustomobject]@{probe_device_ids=@('220410de','248410de')}))
 Assert-True ($ids.Count -eq 2 -and $ids -contains '248410de' -and $ids -notcontains '220610de') 'Preliminary IDs were not derived from the envelope.'
@@ -66,8 +72,10 @@ $otherCandidate=Get-UGGpuAssessment @((Video '2484' 'NVIDIA GeForce RTX 3070')) 
 Assert-True ($otherCandidate.Status -eq 'CANDIDATE' -and $otherCandidate.Status -ne 'PASS' -and $otherCandidate.Detail -match 'preliminary ID list only') 'A selected other GPU did not remain preliminary.'
 $intel=[pscustomobject]@{Name='Intel fixture';PNPDeviceID='PCI\VEN_8086&DEV_1234\PRIVATE-INSTANCE'}
 Assert-True ((Get-UGGpuAssessment @($intel,(Video '2484')) $ids).Status -eq 'CANDIDATE') 'One NVIDIA plus integrated non-NVIDIA display was rejected.'
-$ambiguous=Get-UGGpuAssessment @((Video '2204'),(Video '2484')) $ids
-Assert-True ($ambiguous.Status -eq 'BLOCKED' -and $ambiguous.Detail -match 'More than one') 'Multiple NVIDIA controllers accepted.'
+$twoCandidates=Get-UGGpuAssessment @((Video '2204'),(Video '2484')) $ids
+Assert-True ($twoCandidates.Status -eq 'CANDIDATE' -and $twoCandidates.TargetCount -eq 2) 'Two reviewed preliminary identities were not retained as candidates.'
+$ambiguous=Get-UGGpuAssessment @((Video '2204'),(Video '2484'),(Video '2504')) $ids
+Assert-True ($ambiguous.Status -eq 'BLOCKED' -and $ambiguous.Detail -match 'More than two') 'More than two NVIDIA controllers accepted.'
 $unknown=Get-UGGpuAssessment @([pscustomobject]@{Name='NVIDIA fixture';PNPDeviceID='unknown'}) $ids
 Assert-True ($unknown.Status -eq 'UNKNOWN') 'Unknown NVIDIA PCI identity accepted.'
 Assert-True ((Get-UGGpuAssessment @($intel) $ids).Status -eq 'BLOCKED') 'No NVIDIA controller accepted.'

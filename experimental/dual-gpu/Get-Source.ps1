@@ -85,7 +85,7 @@ function Invoke-UDGit([string[]]$Arguments) {
     }
 }
 
-function Assert-UDReviewedCheckout([string]$Target,$Manifest,[string]$Patch) {
+function Assert-UDReviewedCheckout([string]$Target,$Manifest,[string]$Patch,[switch]$AllowWorkflowArtifacts) {
     Assert-UDOrdinaryPath $Target Directory
     Assert-UDOrdinaryPath (Join-Path $Target '.git') Directory
     $revision=[string](Invoke-UDGit -Arguments @('-C',$Target,'rev-parse','HEAD'))
@@ -105,9 +105,35 @@ function Assert-UDReviewedCheckout([string]$Target,$Manifest,[string]$Patch) {
     if($paths.Count -ne $expected.Count){throw 'Checkout diff does not match the reviewed file set.'}
     foreach($path in $paths){if(!$expected.Remove($path)){throw 'Checkout contains an unexpected or duplicate changed path.'}}
     if($expected.Count){throw 'Checkout is missing a reviewed change.'}
-    $unknown=[string](Invoke-UDGit -Arguments @('-C',$Target,'ls-files','--others','-z','--'))
+    $unknownArguments=@('-C',$Target,'ls-files','--others','-z')
+    if($AllowWorkflowArtifacts){$unknownArguments+='--exclude-standard'}
+    $unknownArguments+='--'
+    $unknown=[string](Invoke-UDGit -Arguments $unknownArguments)
     if($unknown.Length){throw 'Checkout contains unknown files, including ignored files; nothing will be overwritten.'}
     $null=Invoke-UDGit -Arguments @('-C',$Target,'apply','--reverse','--check','--index','--',$Patch)
+}
+
+function Get-UDReceiptData([string]$SourceRoot,$Manifest) {
+    [ordered]@{Format=1;SourceUrl=$Manifest.SourceUrl;SourceCommit=$Manifest.SourceCommit;
+        PatchSha256=$Manifest.PatchSha256;
+        SourceManifestSha256=(Get-FileHash -LiteralPath (Join-Path $SourceRoot 'source.json') -Algorithm SHA256).Hash.ToLowerInvariant()}
+}
+function Assert-UDSourceReceipt([string]$Target,[string]$SourceRoot,$Manifest) {
+    $path=Join-Path $Target '.git/windows-gpu-unlock-dual-source.json'
+    Assert-UDOrdinaryPath $path File
+    if((Get-Item -LiteralPath $path).Length -gt 64KB){throw 'Unexpected experimental source receipt.'}
+    $receipt=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $expected=Get-UDReceiptData $SourceRoot $Manifest
+    if(@($receipt.PSObject.Properties).Count -ne $expected.Count){throw 'Experimental source receipt fields differ.'}
+    foreach($key in $expected.Keys){if($receipt.$key -cne $expected[$key]){throw 'Experimental source receipt does not match this reviewed source manifest.'}}
+}
+function Write-UDSourceReceipt([string]$Target,[string]$SourceRoot,$Manifest) {
+    $path=Join-Path $Target '.git/windows-gpu-unlock-dual-source.json'
+    if(Test-Path -LiteralPath $path){Assert-UDSourceReceipt $Target $SourceRoot $Manifest;return}
+    $data=(Get-UDReceiptData $SourceRoot $Manifest | ConvertTo-Json -Depth 4)+"`n"
+    $stream=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{$bytes=[Text.Encoding]::UTF8.GetBytes($data);$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+    Assert-UDSourceReceipt $Target $SourceRoot $Manifest
 }
 
 function Invoke-UDGetSource([string]$Destination,[switch]$Execute,[string]$SourceRoot=$script:UDSourceRoot) {
@@ -135,6 +161,11 @@ function Invoke-UDGetSource([string]$Destination,[switch]$Execute,[string]$Sourc
     Write-Output ('EXPERIMENTAL source only: '+$manifest.SourceUrl+' at '+$manifest.SourceCommit)
     if(Test-Path -LiteralPath $target) {
         Assert-UDReviewedCheckout $target $manifest $patch
+        $receipt=Join-Path $target '.git/windows-gpu-unlock-dual-source.json'
+        if(!(Test-Path -LiteralPath $receipt)) {
+            if(!$Execute){Write-Output 'PLAN: reviewed source matches; -Execute will create its missing local integrity receipt. Source bytes remain unchanged.';return}
+            Write-UDSourceReceipt $target $SourceRoot $manifest
+        } else {Assert-UDSourceReceipt $target $SourceRoot $manifest}
         Write-Output 'Reviewed experimental checkout already matches; left unchanged.'
         return
     }
@@ -158,6 +189,7 @@ function Invoke-UDGetSource([string]$Destination,[switch]$Execute,[string]$Sourc
     $null=Invoke-UDGit -Arguments @('-C',$target,'apply','--check','--index','--',$patch)
     $null=Invoke-UDGit -Arguments @('-C',$target,'apply','--index','--',$patch)
     Assert-UDReviewedCheckout $target $manifest $patch
+    Write-UDSourceReceipt $target $SourceRoot $manifest
     Write-Output 'Reviewed experimental source prepared. No build, staging, firmware execution or settings change was performed.'
 }
 

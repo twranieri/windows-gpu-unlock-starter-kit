@@ -1,4 +1,4 @@
-Windows GPU Unlock Starter Kit 0.1.2
+Windows GPU Unlock Starter Kit 0.2.0
 Added 2026-10-30: guided Windows preparation, pinned source acquisition,
 native Windows firmware preparation, and before/after tensor-core benchmarking.
 
@@ -18,6 +18,15 @@ https://github.com/Zagitta/gpu-unlock/blob/0ebdb1c6308b6a2072be5bf04513472942541
 Earlier port work: rough2515-hub/rtx3080-unlock-public
 https://github.com/rough2515-hub/rtx3080-unlock-public/tree/a08254d269af30ace9e57237abd3d8e6c261e8f5
 
+Experimental one/two-card donor source — jingx8885 and contributors
+https://github.com/jingx8885/Windows-GPU-UNLOCK
+PR #82: https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/82
+Pinned donor revision: e27d200aaaee8de67a12bce4ab48eba58c0c8551
+The GPL-2.0-only source patch and exact hashes are in experimental/dual-gpu/.
+This kit adds guarded local profile/evidence/orchestration and RAM-only controls.
+The unmerged donor work and this patch do not imply upstream endorsement or
+physical dual-card qualification.
+
 The starter ZIP contains no upstream EFI executable, GPU firmware, VBIOS/PROM,
 Windows driver, CUDA DLL, raw diagnostic capture or machine-specific profile.
 Recipients obtain the pinned upstream sources locally. Those sources retain
@@ -25,5 +34,6 @@ their own licenses, attribution, notices and change history. Firmware generation
 must retain its generated NVIDIA-LICENSE and upstream firmware NOTICE.
 
 No upstream endorsement is claimed. A preparation check is not hardware
-compatibility approval. The unchanged upstream capture, profile, asset and host
-test gates decide whether a local USB package can be built.
+compatibility approval. Exact reviewed capture, profile, asset and actual-input host-test gates decide
+whether a local USB package can be built. Physical dual-card behavior remains
+unverified.
