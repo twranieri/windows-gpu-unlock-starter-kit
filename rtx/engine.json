@@ -1,0 +1,45 @@
+{
+  "SourceUrl": "https://github.com/physicsdolphin/nv-uefi-unlocker.git",
+  "SourceCommit": "37327d53dfae1f475638cdb8897b56d3edd4eb20",
+  "UpstreamRelease": "v2.1.11-diag2",
+  "DevelopmentCommit": "91612dadacb2af3b87766b5339babe665ad567cd",
+  "PatchSha256": "6bf3034cc7495011a0f2ca60aed8ed18816b1c9a020312b03ff4de89e21c06a3",
+  "Files": [
+    {
+      "Path": "loader/Cargo.toml",
+      "Sha256": "09409e30172ca0a6e3e04219af772c1e46036507e03ca23a0157209aff25d6eb"
+    },
+    {
+      "Path": "loader/src/banner.rs",
+      "Sha256": "f2b156ba60ba5d9d2ec5d545b7b56ef261a8650dd415fcabf8bd356eece02b68"
+    },
+    {
+      "Path": "loader/src/kit_targets.rs",
+      "Sha256": "fda47f95dd3c7ff0b1839391dffee9d74789d8af731a276fa02657813e70706a"
+    },
+    {
+      "Path": "loader/src/logging.rs",
+      "Sha256": "8a3e3149edbf00f8c1528e543e76ef63bffc255cff9e2bc1fbc3795a24c9b9d0"
+    },
+    {
+      "Path": "loader/src/main.rs",
+      "Sha256": "bd09b4f083a5b7a27f45553d28466e396f7cb4686201de89d05a8badac9fed07"
+    },
+    {
+      "Path": "loader/src/pci.rs",
+      "Sha256": "0c6168ab6fa14554f0ea867c0d4f42f940972bf57a5275cbe346fb27fcd7cb16"
+    },
+    {
+      "Path": "loader/src/tx.rs",
+      "Sha256": "08c5a30b3ac8b345586025a88c42f5439840ca07091794a03df0045bea873eb8"
+    },
+    {
+      "Path": "loader/src/tx_detach.rs",
+      "Sha256": "d5d986a476761b041e67aa6bcb3995abd8a96332fc62f1bfd53534143a84dc6f"
+    },
+    {
+      "Path": "sim/tests/kit_targets.rs",
+      "Sha256": "f3df496ae439e0cd1c09293366c0b187ed1522c63038d265d7ff56ae02c5caba"
+    }
+  ]
+}

@@ -1,5 +1,11 @@
 # Changes
 
+## 0.3.0 — 2026-11-04 (test build)
+
+- Add an experimental RTX 30 and RTX 40 route using pinned `nv-uefi-unlocker` source with separate read-only and transaction builds.
+- Bind staging and runtime to one or two exact PCI identities. Check the probe log and firmware files before replacing the USB loader. Require manual boot confirmation.
+- Add NVIDIA's 25 listed RTX 40 IDs to the device catalog and select firmware family independently for each card.
+
 ## 0.2.2 — 2026-11-04 (test build)
 
 - Add the exact Maxsun RTX 3080 10GB LHR candidate and bounded read-only evidence for the RTX 3080 `2206` and two other LHR subsystems.

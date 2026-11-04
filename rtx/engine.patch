@@ -1,0 +1,791 @@
+diff --git a/loader/Cargo.toml b/loader/Cargo.toml
+index 20280ee9eb7968f13046ebfe3d02e2ca0f708ccf..ae0ca12af9f108dd18dc6170fb942a67766aad99 100644
+--- a/loader/Cargo.toml
++++ b/loader/Cargo.toml
+@@ -19,6 +19,8 @@ default = []
+ # build is the gated artifact (constitution 1.7 - never flash one without
+ # the explicit user go).
+ tx = []
++# Starter kit: manual confirmation and an exact Ampere/Ada target set.
++kit = []
+ 
+ [build-dependencies]
+ # none: build.rs uses std only
+diff --git a/loader/src/banner.rs b/loader/src/banner.rs
+index 7b6ab98fbe91f817349809c93129e87252585b5c..09913d443a8213760a46f54f13dce2378324b0ae 100644
+--- a/loader/src/banner.rs
++++ b/loader/src/banner.rs
+@@ -5,7 +5,12 @@ use log::info;
+ pub fn print(version: &str) {
+     info!("==================================================");
+     info!(" nv-uefi-unlocker v{version} (built {})", env!("BUILD_TS"));
+-    #[cfg(feature = "tx")]
++    #[cfg(all(feature = "tx", feature = "kit"))]
++    {
++        info!(" ** KIT TX BUILD: CONTAINS GPU-WRITE PATHS **");
++        info!("PROMPT: PRESS SPACE or ENTER for the exact kit target set; other key / 30s no-key = ABORT");
++    }
++    #[cfg(all(feature = "tx", not(feature = "kit")))]
+     {
+         info!(" ** TX BUILD: CONTAINS GPU-WRITE PATHS **");
+         // Quiet mode (issue #38): a compact banner with PROMPT-tagged lines
+@@ -36,6 +41,8 @@ pub fn print(version: &str) {
+         info!(" read-only build: enumerate + sample + chain-load");
+         info!(" console output only; no GPU writes by design");
+     }
++    #[cfg(all(feature = "kit", not(feature = "tx")))]
++    info!(" KIT PROBE BUILD: read-only exact target inventory");
+     info!("==================================================");
+     info!("PHASE: CONFIRM");
+ }
+diff --git a/loader/src/kit_targets.rs b/loader/src/kit_targets.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..18edb021b25128d011cf2ff8949739310639748d
+--- /dev/null
++++ b/loader/src/kit_targets.rs
+@@ -0,0 +1,77 @@
++//! Starter kit target manifest, shared with the host-side contract tests.
++
++use alloc::vec::Vec;
++
++// Version/nonce header and two 26-byte rows with CRLF.
++const MAX_BYTES: usize = 97;
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct Target {
++    pub bdf: (usize, usize, usize, usize),
++    pub device: u16,
++    pub subsystem: u32,
++}
++
++pub fn parse(raw: &[u8]) -> Option<(&str, Vec<Target>)> {
++    if raw.is_empty() || raw.len() > MAX_BYTES || !raw.is_ascii() {
++        return None;
++    }
++    let mut lines = core::str::from_utf8(raw).ok()?.lines();
++    let nonce = lines.next()?.strip_prefix("kit-v1 ")?;
++    if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
++        return None;
++    }
++    let mut targets = Vec::new();
++    for line in lines {
++        let row = line.as_bytes();
++        if targets.len() == 2
++            || row.len() != 26
++            || row[4] != b':'
++            || row[7] != b':'
++            || row[10] != b'.'
++            || row[12] != b' '
++            || row[17] != b' '
++        {
++            return None;
++        }
++        let hex = |start: usize, end: usize| u32::from_str_radix(&line[start..end], 16).ok();
++        // from_str_radix also accepts a leading '+', so check every digit.
++        if ![0..4, 5..7, 8..10, 11..12, 13..17, 18..26]
++            .iter()
++            .all(|span| row[span.clone()].iter().all(u8::is_ascii_hexdigit))
++        {
++            return None;
++        }
++        let bdf = (
++            hex(0, 4)? as usize,
++            hex(5, 7)? as usize,
++            hex(8, 10)? as usize,
++            hex(11, 12)? as usize,
++        );
++        let device = hex(13, 17)? as u16;
++        let subsystem = hex(18, 26)?;
++        if bdf.2 > 31
++            || bdf.3 != 0
++            || [0, 0xffff].contains(&device)
++            || [0, 0xffff].contains(&(subsystem as u16))
++            || [0, 0xffff].contains(&((subsystem >> 16) as u16))
++            || targets.iter().any(|target: &Target| target.bdf == bdf)
++        {
++            return None;
++        }
++        targets.push(Target { bdf, device, subsystem });
++    }
++    if targets.is_empty() {
++        return None;
++    }
++    Some((nonce, targets))
++}
++
++pub fn matches(expected: &[Target], discovered: &[Target]) -> bool {
++    (1..=2).contains(&expected.len())
++        && discovered.len() == expected.len()
++        && expected.iter().all(|target| {
++            discovered.iter().filter(|observed| *observed == target).count() == 1
++        })
++        && discovered.iter().all(|target| expected.contains(target))
++}
+diff --git a/loader/src/logging.rs b/loader/src/logging.rs
+index 116c9fd828dad5cb786242a6536467dc91b6377f..bce4d1c14287cf77e977e11fd1ec26ea15520b02 100644
+--- a/loader/src/logging.rs
++++ b/loader/src/logging.rs
+@@ -144,6 +144,7 @@ impl Log for DualLogger {
+             *self.lines.get() = n;
+             let fe = FLUSH_EVERY_LINES.load(core::sync::atomic::Ordering::Relaxed);
+             let flush = (fe > 0 && n % fe == 0)
++                || (cfg!(feature = "kit") && line.contains("KIT-PROBE:"))
+                 || FLUSH_MARKERS.iter().any(|m| line.contains(m));
+             if let Some(f) = (*self.file.get()).as_mut() {
+                 let ok = f.write(line.as_bytes()).is_ok() && (!flush || f.flush().is_ok());
+diff --git a/loader/src/main.rs b/loader/src/main.rs
+index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42ea5bd2a4 100644
+--- a/loader/src/main.rs
++++ b/loader/src/main.rs
+@@ -20,6 +20,8 @@ mod logging;
+ mod pci;
+ mod sample;
+ mod timing;
++#[cfg(feature = "kit")]
++mod kit_targets;
+ #[cfg(feature = "tx")]
+ mod tx;
+ #[cfg(feature = "tx")]
+@@ -34,7 +36,7 @@ mod tx_booter;
+ mod tx_detach;
+ #[cfg(feature = "tx")]
+ mod tx_portal;
+-#[cfg(feature = "tx")]
++#[cfg(all(feature = "tx", not(feature = "kit")))]
+ mod tx_prep;
+ 
+ const VERSION: &str = env!("CARGO_PKG_VERSION");
+@@ -43,6 +45,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
+ /// stick root, the operator has declared intent ON THE STICK ITSELF - the
+ /// wait becomes a short countdown that auto-proceeds, any key aborts. The
+ /// first marker line may set the countdown seconds (1..=30, default 5).
++#[cfg(not(feature = "kit"))]
+ const ARMED_MARKER: &CStr16 = cstr16!(r"\i_know_what_i_am_doing.txt");
+ /// Issue #38: verdict-lines-only console output. Some iGPU GOPs render
+ /// ~1 line/s, so the full console mirror cost minutes per run; the log
+@@ -110,6 +113,9 @@ fn main() -> Status {
+     // prep interleaved (enumerate / GOP probe / sample / select / asset
+     // reads into the tx.rs read-through cache): the first GPU touch still
+     // happens only after PROCEED, and aborting mid-prep writes nothing.
++    #[cfg(feature = "kit")]
++    let confirmed = keywait::wait_confirm(CONFIRM_WAIT);
++    #[cfg(not(feature = "kit"))]
+     let confirmed = if let Some(content) = chainload::boot_volume_read(ARMED_MARKER) {
+         let secs = chainload::parse_armed_seconds(&content);
+         info!(
+@@ -131,7 +137,7 @@ fn main() -> Status {
+     // Phase: ENUMERATE (read-only). ALL NVIDIA display adapters, in
+     // firmware enumeration order. The armed prep (TX builds) already ran
+     // this, the GOP probe and the sample inside the countdown window.
+-    #[cfg(feature = "tx")]
++    #[cfg(all(feature = "tx", not(feature = "kit")))]
+     let (gpus, prep_ran) = if let keywait::Confirm::Proceed = confirmed {
+         match tx_prep::take_gpus() {
+             Some(g) => (g, true),
+@@ -140,10 +146,8 @@ fn main() -> Status {
+     } else {
+         (pci::enumerate(), false)
+     };
+-    #[cfg(not(feature = "tx"))]
+-    let gpus = pci::enumerate();
+-    #[cfg(not(feature = "tx"))]
+-    let prep_ran = false;
++    #[cfg(any(not(feature = "tx"), feature = "kit"))]
++    let (gpus, prep_ran) = (pci::enumerate(), false);
+ 
+     // Phase: GOP-PROBE (read-only; which console driver owns which GPU).
+     if !prep_ran {
+@@ -159,6 +163,9 @@ fn main() -> Status {
+         }
+     }
+ 
++    #[cfg(all(feature = "kit", not(feature = "tx")))]
++    kit_manifest_matches(&gpus);
++
+     // Phase: TX (feature-gated transaction; only in explicit tx builds).
+     // NOTE: inside tx_phase each card's console drivers are detached
+     // (TOTORONG craft) - the screen goes dark from that card's transaction
+@@ -199,7 +206,10 @@ fn main() -> Status {
+         Err(e) => info!("CHAIN: failed: {:?}", e.status()),
+     }
+ 
++    #[cfg(not(all(feature = "tx", feature = "kit")))]
+     info!("FINAL: read-only run complete; nothing was written to the GPU, nothing to restore. Safe to reboot.");
++    #[cfg(all(feature = "tx", feature = "kit"))]
++    info!("FINAL: OS handoff returned; see the individual transaction verdicts");
+     logging::finish();
+     Status::SUCCESS
+ }
+@@ -239,7 +249,7 @@ fn main() -> Status {
+ /// tiers live in the README matrix, and a first-silicon report
+ /// upgrades the row (issue #8 process). Shared by tx_one_card and the
+ /// armed-prep asset step.
+-#[cfg(feature = "tx")]
++#[cfg(any(feature = "tx", feature = "kit"))]
+ fn asset_family(dev: u16) -> Option<&'static str> {
+     match dev {
+         0x2600..=0x28ff => Some("ad102"),
+@@ -249,14 +259,90 @@ fn asset_family(dev: u16) -> Option<&'static str> {
+     }
+ }
+ 
++#[cfg(feature = "kit")]
++fn kit_manifest_matches(gpus: &[pci::FoundGpu]) -> bool {
++    let Some(raw) = chainload::boot_volume_read(cstr16!(r"\kit-targets.txt")) else {
++        info!("KIT: target manifest missing or unreadable");
++        return false;
++    };
++    let Some((nonce, expected)) = kit_targets::parse(&raw) else {
++        info!("KIT: target manifest malformed");
++        return false;
++    };
++    if expected.iter().any(|target| !matches!(asset_family(target.device), Some("ga102" | "ad102"))) {
++        info!("KIT: target manifest contains an unsupported family");
++        return false;
++    }
++    let discovered: alloc::vec::Vec<_> = gpus.iter().map(|gpu| gpu.kit_identity).collect();
++    if !kit_targets::matches(&expected, &discovered) {
++        info!("KIT: live NVIDIA display set differs from the target manifest");
++        return false;
++    }
++    #[cfg(not(feature = "tx"))]
++    info!("KIT-PROBE: {nonce} matched {}", expected.len());
++    #[cfg(feature = "tx")]
++    info!("KIT: {nonce} matched {} target(s)", expected.len());
++    true
++}
++
++#[cfg(all(feature = "kit", feature = "tx"))]
++fn kit_pci_preflight(gpus: &[pci::FoundGpu]) -> bool {
++    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
++    gpus.iter().all(|gpu| {
++        let pci = unsafe {
++            boot::open_protocol::<pci::PciIo>(
++                OpenProtocolParams { handle: gpu.handle, agent: boot::image_handle(), controller: None },
++                OpenProtocolAttributes::GetProtocol,
++            )
++        };
++        pci.is_ok_and(|pci| {
++            pci.kit_identity() == Some(gpu.kit_identity)
++                && tx_detach::pm_preflight(&pci).is_ok()
++        })
++    })
++}
++
+ #[cfg(feature = "tx")]
+ fn tx_phase(gpus: &[pci::FoundGpu]) {
++    #[cfg(feature = "kit")]
++    let targets = {
++        if !kit_manifest_matches(gpus) {
++            info!("KIT: transaction refused before any GPU write");
++            return;
++        }
++        gpus
++    };
++    #[cfg(not(feature = "kit"))]
+     let targets = pci::select_tx_targets(gpus);
+     if targets.is_empty() {
+         info!("TX: no transaction target (selection marker refused, or no supported GPU) - chain-loading unchanged Windows");
+         return;
+     }
+     tx::list_root_entries();
++    // Load and validate each family's inputs before the first card can run.
++    // Hold the validated bytes so a later card cannot fall back to replay.
++    #[cfg(feature = "kit")]
++    let prepared = {
++        let mut prepared = alloc::vec::Vec::new();
++        for gpu in targets {
++            let Some(family) = asset_family(gpu.device_id) else {
++                return;
++            };
++            if !prepared.iter().any(|assets: &tx::TxAssets| assets.family == family) {
++                let Some(assets) = load_tx_assets(family) else {
++                    info!("KIT: incomplete {family} assets; no card was touched");
++                    return;
++                };
++                prepared.push(assets);
++            }
++        }
++        prepared
++    };
++    #[cfg(feature = "kit")]
++    if !kit_pci_preflight(targets) {
++        info!("KIT: a target changed or D0 could not be confirmed; no card was touched");
++        return;
++    }
+     let mut attempted = 0usize;
+     for (i, g) in targets.iter().enumerate() {
+         info!(
+@@ -269,7 +355,14 @@ fn tx_phase(gpus: &[pci::FoundGpu]) {
+             g.dev,
+             g.fun
+         );
+-        if tx_one_card(g) {
++        #[cfg(feature = "kit")]
++        let assets = match prepared.iter().find(|assets| Some(assets.family) == asset_family(g.device_id)) {
++            Some(assets) => Some(assets),
++            None => return,
++        };
++        #[cfg(not(feature = "kit"))]
++        let assets = None;
++        if tx_one_card(g, assets) {
+             attempted += 1;
+         }
+     }
+@@ -292,38 +385,8 @@ nothing was written, nothing was detached"
+     // hygiene, and CHAIN-MEMMAP logs the map after the free.
+ }
+ 
+-/// One card's full transaction. Every outcome continues the multi-GPU
+-/// loop: EALREADY/EWarm are skip-class, a hard failure gets its own
+-/// emergency FLR on THIS card only - the next card still runs.
+-///
+-/// Returns `true` when the transaction was actually ATTEMPTED (the card was
+-/// eligible and its asset set reached `run_transaction`, whatever the
+-/// outcome), `false` when the card was gated out before any GPU touch -
+-/// no assets / no family mapping / PciIo open failure. tx_phase turns that
+-/// into the summary and the `FINAL: 0 card(s) unlocked` verdict (issue #139).
+ #[cfg(feature = "tx")]
+-fn tx_one_card(g: &pci::FoundGpu) -> bool {
+-    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
+-    let proto = unsafe {
+-        boot::open_protocol::<pci::PciIo>(
+-            OpenProtocolParams { handle: g.handle, agent: boot::image_handle(), controller: None },
+-            OpenProtocolAttributes::GetProtocol,
+-        )
+-    };
+-    let Ok(pci) = proto else {
+-        info!("TX: open PciIo failed");
+-        return false;
+-    };
+-    let gpu = tx::TxGpu { pci: &pci, bar: 0 };
+-
+-    // Per-family asset selection by PCI device ID - see asset_family.
+-    let dev = g.device_id;
+-    let Some(family) = asset_family(dev) else {
+-        info!("TX: device 10de:{dev:04x} has no asset family mapping - skipping");
+-        return false;
+-    };
+-    info!("TX: device 10de:{dev:04x} -> asset family '{family}'");
+-
++fn load_tx_assets(family: &'static str) -> Option<tx::TxAssets> {
+     // Stick-completeness precheck (field case: a localhost-built stick made
+     // on a 40-series-only machine carries no ga10x assets, so a 30-series
+     // card in a multi-GPU target machine is silently skipped with no
+@@ -338,10 +401,10 @@ would be skipped. Rebuild with: .\\make-usbroot.ps1 -Family all, then copy the C
+ folder one level down is invisible to the loader (issues #139/#142)"
+         );
+         info!(
+-            "TX: card 10de:{dev:04x} NOT touched - asset set for family '{family}' absent, \
++            "TX: card NOT touched - asset set for family '{family}' absent, \
+ so no transaction was attempted and nothing was written"
+         );
+-        return false;
++        return None;
+     }
+ 
+     // Assets: `Ok(None)` = the stick does not carry it (skip this card);
+@@ -357,13 +420,17 @@ so no transaction was attempted and nothing was written"
+                         "TX: ", $what, " is present but unreadable (damaged stick or pulled media)",
+                         " - aborting before any GPU interaction"
+                     ));
+-                    return false;
++                    return None;
+                 }
+             }
+         };
+     }
+     let booter = must_asset!("booter_load", tx::read_asset_fmt("\\booter_load_{}.bin", family));
+     let boot_desc = must_asset!("gsp_boot_desc", tx::read_asset_fmt("\\gsp_boot_desc_{}.bin", family));
++    if cfg!(feature = "kit") && boot_desc.is_none() {
++        info!("KIT: boot descriptor missing for {family}");
++        return None;
++    }
+     let gsp_boot = must_asset!("gsp_boot", tx::read_asset_fmt("\\gsp_boot_{}.bin", family));
+     let gsp_image = must_asset!("fwimage", tx::read_asset_fmt("\\fwimage_{}.bin", family));
+     let stock_sig = must_asset!("fwsignature", tx::read_asset_fmt("\\fwsignature_{}.bin", family));
+@@ -376,12 +443,21 @@ so no transaction was attempted and nothing was written"
+     // 6514938280). This marker swaps ONLY the payload. Same strict
+     // semantics as every other asset: present-but-unreadable aborts, it
+     // never degrades to the family-pinned payload.
++    #[cfg(not(feature = "kit"))]
+     let v67 = match tx::read_asset("\\v67-direct-ss.bin") {
+         Ok(Some(v)) => Some(v),
+         Ok(None) => must_asset!("v67 payload", tx::read_asset_fmt("\\v67-{}-four-plm.bin", family)),
+         Err(()) => {
+             info!("TX: \\v67-direct-ss.bin is present but unreadable (damaged stick or pulled media) - aborting before any GPU interaction");
+-            return false;
++            return None;
++        }
++    };
++    #[cfg(feature = "kit")]
++    let v67 = match must_asset!("v67 payload", tx::read_asset_fmt("\\v67-{}-four-plm.bin", family)) {
++        Some(payload) => Some(payload),
++        None => {
++            info!("KIT: missing V67 payload for {family}; replay is disabled");
++            return None;
+         }
+     };
+     let bl = if family == "tu10x" {
+@@ -392,7 +468,7 @@ so no transaction was attempted and nothing was written"
+     let (Some(booter), Some(gsp_boot), Some(gsp_image), Some(stock_sig)) =
+         (booter, gsp_boot, gsp_image, stock_sig) else {
+         info!("TX: assets missing for family '{family}' (booter_load_*/gsp_boot_*/fwimage_*/fwsignature_*) - skipping");
+-        return false;
++        return None;
+     };
+     if v67.is_none() {
+         info!("TX: NO V67 file - chain-replay mode (no unlock writes)");
+@@ -401,7 +477,7 @@ so no transaction was attempted and nothing was written"
+     }
+     if family == "tu10x" && bl.is_none() {
+         info!("TX: tu10x missing \\sec2_bl_tu10x.bin (WITH_LOADER FWSEC needs the generic falcon BL) - skipping");
+-        return false;
++        return None;
+     }
+     // Turing track enabled 2026-10-27 (user M3 go): the chain is the
+     // cmp50hx-proven TU106 recipe - FWSEC BOOT_WITH_LOADER via the generic
+@@ -413,9 +489,50 @@ so no transaction was attempted and nothing was written"
+     // stick must be refused here - the DMA copies use fixed windows.
+     if let Err(e) = tx::validate_asset_sizes(&assets) {
+         info!("TX: asset validation failed ({e:?}) - nothing was touched, chain-loading Windows");
++        return None;
++    }
++    Some(assets)
++}
++
++/// Returns whether this card reached the transaction. Recovery is per-card
++/// and the next card still runs, including after emergency FLR.
++#[cfg(feature = "tx")]
++fn tx_one_card(g: &pci::FoundGpu, prepared: Option<&tx::TxAssets>) -> bool {
++    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
++    let proto = unsafe {
++        boot::open_protocol::<pci::PciIo>(
++            OpenProtocolParams { handle: g.handle, agent: boot::image_handle(), controller: None },
++            OpenProtocolAttributes::GetProtocol,
++        )
++    };
++    let Ok(pci) = proto else {
++        info!("TX: open PciIo failed");
++        return false;
++    };
++    #[cfg(feature = "kit")]
++    if pci.kit_identity() != Some(g.kit_identity) {
++        info!("KIT: PCI identity changed before transaction; this card was not touched");
+         return false;
+     }
+-    match tx::run_transaction(&gpu, &assets, g.handle) {
++    let gpu = tx::TxGpu { pci: &pci, bar: 0 };
++    let dev = g.device_id;
++    let Some(family) = asset_family(dev) else {
++        info!("TX: device 10de:{dev:04x} has no asset family mapping - skipping");
++        return false;
++    };
++    info!("TX: device 10de:{dev:04x} -> asset family '{family}'");
++    let loaded;
++    let assets = match prepared {
++        Some(assets) => assets,
++        None => {
++            let Some(assets) = load_tx_assets(family) else {
++                return false;
++            };
++            loaded = assets;
++            &loaded
++        }
++    };
++    match tx::run_transaction(&gpu, assets, g.handle) {
+         Ok(()) => {
+             info!("SELECTOR RESULT: transaction complete");
+             tx::handoff_out(&pci);
+diff --git a/loader/src/pci.rs b/loader/src/pci.rs
+index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9bd85ab749 100644
+--- a/loader/src/pci.rs
++++ b/loader/src/pci.rs
+@@ -200,6 +200,49 @@ impl PciIo {
+         v
+     }
+ 
++    #[cfg(feature = "kit")]
++    fn config_read_u32_checked(&self, offset: u32) -> Option<u32> {
++        let mut value = 0u32;
++        let status = self.config_read_raw(PciWidth::Uint32, offset, 1, &mut value as *mut _ as *mut c_void);
++        (status == Status::SUCCESS).then_some(value)
++    }
++
++    #[cfg(feature = "kit")]
++    fn kit_subsystem(&self) -> Option<u32> {
++        // Offset 0x2c is the subsystem DWORD only in a Type 0 header.
++        if (self.config_read_u32_checked(0x0c)? >> 16) & 0x7f != 0 {
++            return None;
++        }
++        self.config_read_u32_checked(0x2c)
++    }
++
++    #[cfg(all(feature = "kit", feature = "tx"))]
++    pub fn kit_identity(&self) -> Option<crate::kit_targets::Target> {
++        let id = self.config_read_u32_checked(0x00)?;
++        let class = self.config_read_u32_checked(0x08)?;
++        let bdf = self.get_location()?;
++        if id as u16 != NVIDIA_VENDOR_ID || class >> 24 != 0x03 || bdf.3 != 0 {
++            return None;
++        }
++        Some(crate::kit_targets::Target {
++            bdf,
++            device: (id >> 16) as u16,
++            subsystem: self.kit_subsystem()?,
++        })
++    }
++
++    #[cfg(all(feature = "kit", feature = "tx"))]
++    pub fn kit_pmcsr(&self, cap: u8) -> Option<u16> {
++        let mut value = 0u16;
++        let status = self.config_read_raw(
++            PciWidth::Uint16,
++            u32::from(cap) + 4,
++            1,
++            &mut value as *mut _ as *mut c_void,
++        );
++        (status == Status::SUCCESS).then_some(value)
++    }
++
+     pub fn config_read_u8(&self, offset: u32) -> u8 {
+         let mut v = 0u8;
+         let st = self.config_read_raw(PciWidth::Uint8, offset, 1, &mut v as *mut _ as *mut c_void);
+@@ -673,6 +716,8 @@ pub struct FoundGpu {
+     pub bus: usize,
+     pub dev: usize,
+     pub fun: usize,
++    #[cfg(feature = "kit")]
++    pub kit_identity: crate::kit_targets::Target,
+ }
+ 
+ /// Enumerate all PCI(e) devices; NVIDIA (10de) ones get the capability walk.
+@@ -713,6 +758,9 @@ pub fn enumerate() -> alloc::vec::Vec<FoundGpu> {
+             Ok(p) => p,
+             Err(e) => {
+                 info!("ENUMERATE: open_protocol failed on {:?}: {:?}", handle, e.status());
++                if cfg!(feature = "kit") {
++                    return alloc::vec::Vec::new();
++                }
+                 continue;
+             }
+         };
+@@ -722,16 +770,36 @@ pub fn enumerate() -> alloc::vec::Vec<FoundGpu> {
+             Some(loc) => loc,
+             None => {
+                 info!("ENUMERATE: no location on {:?}, skip", handle);
++                if cfg!(feature = "kit") {
++                    return alloc::vec::Vec::new();
++                }
+                 continue;
+             }
+         };
+ 
+-        let vendor = pci.config_read_u16(0x00);
+-        let device = pci.config_read_u16(0x02);
++        #[cfg(feature = "kit")]
++        let (vendor, device) = match pci.config_read_u32_checked(0x00) {
++            Some(id) => (id as u16, (id >> 16) as u16),
++            None => {
++                info!("ENUMERATE: unreadable PCI identity, kit set refused");
++                return alloc::vec::Vec::new();
++            }
++        };
++        #[cfg(not(feature = "kit"))]
++        let (vendor, device) = (pci.config_read_u16(0x00), pci.config_read_u16(0x02));
+         if vendor == 0xffff || vendor == 0x0000 {
+             info!("PCI {:04x}:{:02x}:{:02x}.{} empty slot (vendor {:#06x})", seg, bus, dev, fun, vendor);
+             continue;
+         }
++        #[cfg(feature = "kit")]
++        let class = match pci.config_read_u32_checked(0x08) {
++            Some(class) => class >> 16,
++            None => {
++                info!("ENUMERATE: unreadable PCI class, kit set refused");
++                return alloc::vec::Vec::new();
++            }
++        };
++        #[cfg(not(feature = "kit"))]
+         let class = pci.config_read_u32(0x08) >> 16; // class<<8 | subclass
+         info!(
+             "PCI {:04x}:{:02x}:{:02x}.{} {:04x}:{:04x} class {:06x}",
+@@ -743,10 +811,23 @@ pub fn enumerate() -> alloc::vec::Vec<FoundGpu> {
+             // Other NVIDIA functions (HDA audio, NICs) are logged but never
+             // selected - the old first-fun-0 rule could match those.
+             if fun == 0 && class >> 8 == 0x03 {
++                #[cfg(feature = "kit")]
++                let Some(subsystem) = pci.kit_subsystem() else {
++                    info!("ENUMERATE: NVIDIA subsystem unreadable, kit set refused");
++                    return alloc::vec::Vec::new();
++                };
++                #[cfg(feature = "kit")]
++                info!("ENUMERATE: kit identity {seg:04x}:{bus:02x}:{dev:02x}.{fun} {device:04x} {subsystem:08x}");
+                 candidates.push(FoundGpu {
+                     handle: *handle,
+                     device_id: device,
+                     seg, bus, dev, fun,
++                    #[cfg(feature = "kit")]
++                    kit_identity: crate::kit_targets::Target {
++                        bdf: (seg, bus, dev, fun),
++                        device,
++                        subsystem,
++                    },
+                 });
+             }
+             describe_nvidia(&pci, seg, bus, dev, fun, device);
+@@ -771,7 +852,7 @@ pub fn enumerate() -> alloc::vec::Vec<FoundGpu> {
+ /// BDF that matches nothing (or an unparsable marker) refuses to guess and
+ /// returns an empty set - the stick owner asked for a specific card and no
+ /// other one may run.
+-#[cfg(feature = "tx")]
++#[cfg(all(feature = "tx", not(feature = "kit")))]
+ pub fn select_tx_targets(all: &[FoundGpu]) -> alloc::vec::Vec<FoundGpu> {
+     // read_asset, NOT read_boot_file: the three states matter (issue #106
+     // zero-byte lesson). Absent = no pin, default order. Ok(Some) = parse.
+@@ -818,7 +899,7 @@ pub fn select_tx_targets(all: &[FoundGpu]) -> alloc::vec::Vec<FoundGpu> {
+ }
+ 
+ /// Parse "bb:dd.f" or "dddd:bb:dd.f" (hex, whitespace/NUL tolerant).
+-#[cfg(feature = "tx")]
++#[cfg(all(feature = "tx", not(feature = "kit")))]
+ fn parse_bdf(raw: &[u8]) -> Option<(usize, usize, usize, usize)> {
+     let clean: alloc::vec::Vec<u8> = raw
+         .iter()
+diff --git a/loader/src/tx.rs b/loader/src/tx.rs
+index 40c23c065700ddfa581726dd8fa6afb39f0ae142..967244c9f275c1e1dcc5a9f89380f2cad6150a13 100644
+--- a/loader/src/tx.rs
++++ b/loader/src/tx.rs
+@@ -827,7 +827,9 @@ pub fn read_boot_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
+ 
+ fn read_boot_file_inner(path: &str) -> Inner {
+     // Diagnostic bypass (issue #146): the knob is probed once, memoized.
+-    if asset_cache_disabled() {
++    // The kit keeps its prepared per-family assets until all transactions
++    // return. Avoid keeping a second full copy in the upstream cache.
++    if cfg!(feature = "kit") || asset_cache_disabled() {
+         return read_boot_file_uncached(path);
+     }
+     // Read-through cache first (armed prep warms it; see AssetCacheCell).
+@@ -874,7 +876,7 @@ fn read_boot_file_uncached(path: &str) -> Inner {
+                 // attempt at all (symptom: transaction never ran, ssdiag says
+                 // NOT_UNLOCKED, reporter files it as a failed unlock).
+                 // One read-only retry, one level down, guarded against recursion.
+-                if !orig_path.starts_with("\\usbroot\\") {
++                if !cfg!(feature = "kit") && !orig_path.starts_with("\\usbroot\\") {
+                     let alt = alloc::format!("\\usbroot{}", orig_path);
+                     let probe = read_boot_file_uncached(&alt);
+                     if matches!(probe, Inner::Content(_)) {
+@@ -1007,7 +1009,7 @@ pub fn run_transaction(gpu: &TxGpu, assets: &TxAssets, pci_handle: uefi::Handle)
+     // guarded C-parity build compiled it out (travis overlay T2, Phase B) -
+     // one PMCSR force-D0 config write is the only behavioral difference on a
+     // cold D0 entry.
+-    if probe_file("\\tx-no-pm-preflight.txt") {
++    if !cfg!(feature = "kit") && probe_file("\\tx-no-pm-preflight.txt") {
+         info!("TX: \\tx-no-pm-preflight.txt present - PM preflight skipped (guarded-overlay parity, one PMCSR write)");
+     } else {
+         crate::tx_detach::pm_preflight(gpu.pci).map_err(|e| {
+diff --git a/loader/src/tx_detach.rs b/loader/src/tx_detach.rs
+index ef1eb88bf5664958ebb6167434371ffcc50d0d3f..d76303272ce7e43728efdd5086cbc9f4d7d3c970 100644
+--- a/loader/src/tx_detach.rs
++++ b/loader/src/tx_detach.rs
+@@ -198,11 +198,24 @@ pub struct PmEntry {
+ pub fn pm_preflight(pci: &PciIo) -> Result<PmEntry, &'static str> {
+     let Some(cap) = pci.pm_cap() else {
+         info!("PM: no power-management capability - D-state not evaluable");
++        if cfg!(feature = "kit") {
++            return Err("kit requires a known D0 entry");
++        }
+         return Ok(PmEntry { cap: None, pmcsr: 0, warm: false });
+     };
++    #[cfg(feature = "kit")]
++    let before = pci.kit_pmcsr(cap).ok_or("kit could not read PMCSR")?;
++    #[cfg(not(feature = "kit"))]
+     let before = pci.pmcsr(cap);
+     let warm = before & 0x3 != 0;
+     info!("PM: entry PMCSR={before:#06x} state=D{} (cap@{cap:#04x})", before & 0x3);
++    if cfg!(feature = "kit") {
++        return if warm {
++            Err("kit requires D0 before any GPU write")
++        } else {
++            Ok(PmEntry { cap: Some(cap), pmcsr: before, warm })
++        };
++    }
+     if warm {
+         info!("PM: WARM ENTRY (resume/fast-startup handoff, not a POST): the previous session's device context is still in this function; the unlock may not survive the Windows handoff");
+         if crate::tx::probe_file("\\tx-require-d0.txt") {
+diff --git a/sim/tests/kit_targets.rs b/sim/tests/kit_targets.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab3aad46f4b344793dc562159de389dd8223f97a
+--- /dev/null
++++ b/sim/tests/kit_targets.rs
+@@ -0,0 +1,70 @@
++extern crate alloc;
++
++#[path = "../../loader/src/kit_targets.rs"]
++mod kit_targets;
++
++const HEADER: &str = "kit-v1 0123456789abcdef0123456789abcdef";
++const AMPERE: &str = "0000:07:00.0 2204 39873842";
++const ADA: &str = "0000:2B:00.0 2704 88821043";
++
++fn manifest(rows: &[&str]) -> String {
++    format!("{HEADER}\n{}", rows.join("\n"))
++}
++
++#[test]
++fn accepts_single_target_and_exact_mixed_set_in_any_order() {
++    let single = manifest(&[AMPERE]);
++    let (nonce, expected) = kit_targets::parse(single.as_bytes()).unwrap();
++    assert_eq!(nonce, &HEADER[7..]);
++    assert_eq!(expected[0].bdf, (0, 7, 0, 0));
++    assert_eq!(expected[0].device, 0x2204);
++    assert_eq!(expected[0].subsystem, 0x3987_3842);
++    assert!(kit_targets::matches(&expected, &expected));
++
++    let pair = format!("{}\r\n", manifest(&[AMPERE, ADA]).replace('\n', "\r\n"));
++    let (_, expected) = kit_targets::parse(pair.as_bytes()).unwrap();
++    assert!(kit_targets::matches(&expected, &[expected[1], expected[0]]));
++}
++
++#[test]
++fn refuses_bad_manifest_shape_and_encoding() {
++    let invalid = [
++        String::new(),
++        manifest(&[]),
++        AMPERE.to_owned(),
++        format!("kit-v1 {}\n{AMPERE}", HEADER[7..].to_uppercase()),
++        format!("kit-v1 1234\n{AMPERE}"),
++        format!("\u{feff}{}", manifest(&[AMPERE])),
++        format!("{}\n\n", manifest(&[AMPERE])),
++        manifest(&["0000:07:00.0\t2204 39873842"]),
++        manifest(&["0000:07:00.0 2204 +9873842"]),
++        manifest(&["0000:07:20.0 2204 39873842"]),
++        manifest(&["0000:07:00.1 2204 39873842"]),
++        manifest(&["0000:07:00.0 2204 39870000"]),
++        manifest(&[AMPERE, "0000:07:00.0 2704 88821043"]),
++        manifest(&[AMPERE, ADA, "0000:09:00.0 2704 88821043"]),
++    ];
++    for text in invalid {
++        assert!(kit_targets::parse(text.as_bytes()).is_none(), "{text:?}");
++    }
++}
++
++#[test]
++fn refuses_added_missing_duplicate_moved_or_changed_adapters() {
++    let pair = manifest(&[AMPERE, ADA]);
++    let (_, expected) = kit_targets::parse(pair.as_bytes()).unwrap();
++    let first = expected[0];
++    let second = expected[1];
++    let variants = [
++        vec![],
++        vec![first],
++        vec![first, second, second],
++        vec![first, first],
++        vec![first, kit_targets::Target { bdf: (0, 4, 0, 0), ..second }],
++        vec![first, kit_targets::Target { device: 0x2702, ..second }],
++        vec![first, kit_targets::Target { subsystem: 0x8883_1043, ..second }],
++    ];
++    for discovered in variants {
++        assert!(!kit_targets::matches(&expected, &discovered), "{discovered:?}");
++    }
++}

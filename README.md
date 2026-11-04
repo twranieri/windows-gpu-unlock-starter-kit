@@ -1,10 +1,14 @@
 # Windows GPU Unlock Starter Kit
 
-**Version 0.2.2 test build.** Read-only inventory for NVIDIA-listed RTX 30-series cards and an experimental unlock path for selected configurations.
+**Version 0.3.0 test build.** `RTX.ps1` adds an experimental source build and USB workflow for one or two RTX 30 and RTX 40 cards. [RTX 30/40 setup and limits](docs/RTX30-40.md)
+
+For an RTX 40 card, a mixed 30/40 pair, or an RTX 30 variant outside the table below, follow the `RTX.ps1` guide above. The list below applies to the separate capture-based workflow.
+
+## Capture-based RTX 30 workflow
 
 [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [One/two-card implementation](experimental/dual-gpu/README.md) · [Originating results](docs/ORIGINATING-RESULTS.md)
 
-The helper detects one or two installed candidate NVIDIA cards, prepares a read-only USB probe, generates a profile from that PC's own complete captures, runs the required host jobs and builds the exact local USB unlock package. Build and staging are separate explicit actions. The guarded one/two-card path is implemented; passing its host tests does not establish physical two-card qualification.
+The existing `Start.ps1` workflow prepares a separate LOCAL profile from complete captures on selected RTX 30 configurations. Its candidate list follows below. Build and staging are separate explicit actions. Physical validation of both kit workflows is limited to their documented results.
 
 The unlock path requires every installed NVIDIA display controller to be an admitted candidate. These device IDs all use vendor `10DE`.
 

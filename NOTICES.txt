@@ -1,4 +1,4 @@
-Windows GPU Unlock Starter Kit 0.2.0
+Windows GPU Unlock Starter Kit 0.3.0
 Added 2026-10-30: guided Windows preparation, pinned source acquisition,
 native Windows firmware preparation, and before/after tensor-core benchmarking.
 
@@ -26,6 +26,16 @@ The GPL-2.0-only source patch and exact hashes are in experimental/dual-gpu/.
 This kit adds guarded local profile/evidence/orchestration and RAM-only controls.
 The unmerged donor work and this patch do not imply upstream endorsement or
 physical dual-card qualification.
+
+Experimental RTX 30 and RTX 40 engine — physicsdolphin and contributors
+https://github.com/physicsdolphin/nv-uefi-unlocker
+Pinned release: v2.1.11-diag2
+Pinned revision: 37327d53dfae1f475638cdb8897b56d3edd4eb20
+The GPL-2.0-only integration patch and exact hashes are in rtx/.
+The patch adds strict target matching, separate read-only and transaction
+builds, and manual boot confirmation. The engine builds locally from the
+pinned source. NVIDIA-derived assets are generated locally and their license
+and notice are retained in the local build directory.
 
 The starter ZIP contains no upstream EFI executable, GPU firmware, VBIOS/PROM,
 Windows driver, CUDA DLL, raw diagnostic capture or machine-specific profile.

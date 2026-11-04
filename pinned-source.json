@@ -1,5 +1,5 @@
 {
-  "kit_version": "0.2.2",
+  "kit_version": "0.3.0",
   "status": "experimental-source-only-helper",
   "windows_source": {
     "url": "https://github.com/impacifist/Windows-GPU-UNLOCK.git",
@@ -17,6 +17,12 @@
   "firmware_source": {
     "url": "https://github.com/Zagitta/gpu-unlock.git",
     "commit": "0ebdb1c6308b6a2072be5bf04513472942541956"
+  },
+  "rtx_30_40_source": {
+    "patch_manifest": "rtx/engine.json",
+    "workflow": "RTX.ps1",
+    "maximum_targets": 2,
+    "physical_kit_validation": false
   },
   "toolchain": {"llvm": "20.1.8", "asset_preparation_python_minimum": "3.14"},
   "hardware_validation": "The underlying pinned workflow succeeded on one RTX 3090/MSI B550 system. This new helper has host checks, not a new physical boot validation.",

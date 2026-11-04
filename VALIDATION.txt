@@ -1,3 +1,22 @@
+Starter Kit 0.3.0 test build, 2026-11-04
+
+- Built the exact patched Rust engine from v2.1.11-diag2 with locked
+  dependencies. A synthetic RTX 3090 and RTX 4070 Super pair produced two
+  distinct AMD64 EFI applications and 13 verified Ampere/Ada assets from
+  the original hash-pinned inputs. The probe binary had no transaction marker.
+- Host workspace tests and three UEFI target contract tests passed. The
+  Windows inventory tests covered all 73 catalog IDs, one- and two-card
+  matching, mixed families, several reported VRAM sizes and rejected devices.
+- Media tests used ordinary temporary directories and checked the exact
+  target roster, nonce-bound log and handoff evidence, blocked tampering,
+  resumed interrupted staging and verified the probe backup.
+- The Windows entry point detected the installed RTX 3090 and produced a
+  single-card package with two EFIs, seven firmware assets and a verified
+  receipt. No physical USB boot, GPU transaction, or recovery through
+  RTX.ps1 was performed. The catalog gives candidates for testing.
+  Individual GPU, VRAM/VBIOS and motherboard combinations remain to be
+  validated.
+
 Starter Kit 0.2.2 test build, 2026-11-04
 
 - All 58 RAM-only 10 GiB transactions passed with five verified firmware
