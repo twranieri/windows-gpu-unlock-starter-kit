@@ -1,6 +1,6 @@
 # Windows GPU Unlock Starter Kit
 
-**Version 0.2.1 test build.** Read-only inventory for NVIDIA-listed RTX 30-series cards and an experimental unlock path for selected configurations.
+**Version 0.2.2 test build.** Read-only inventory for NVIDIA-listed RTX 30-series cards and an experimental unlock path for selected configurations.
 
 [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [One/two-card implementation](experimental/dual-gpu/README.md) · [Originating results](docs/ORIGINATING-RESULTS.md)
 
@@ -14,13 +14,14 @@ The unlock path requires every installed NVIDIA display controller to be an admi
 | RTX 3060 Ti 8GB, selected variant | `24C9` |
 | RTX 3070 8GB, selected variant | `2484` |
 | MSI RTX 3070 Ti 8GB | `2482` with subsystem `1462:5052` |
+| Maxsun RTX 3080 10GB LHR | `2216` with subsystem `7377:2000` and the reviewed PROM and GOP |
 | RTX 3080 12GB | `220A` |
 | RTX 3090 24GB | `2204` |
 | RTX 3090 Ti 24GB | `2203` |
 
 Identical or different candidates can form a two-card set. The kit checks exact chip and VRAM, PCI resources, UEFI driver code, console ownership and both cold captures before an unlock build. Physical two-card validation is pending.
 
-For other IDs in the [RTX 30-series catalog](rtx30-pci.json), including the RTX 3050, RTX 3080 10GB and laptop variants, `Check` shows `OBSERVE`. `Probe` can collect a read-only UEFI inventory for review. Build and StageUnlock require a qualified candidate on every card.
+`Check` displays driver-reported memory by PCI address when NVIDIA's driver tool is available. The unlock profile uses the separate cold-boot VRAM reading. The original RTX 3080 10GB `2206` and selected other LHR boards can collect deeper read-only evidence. For those configurations and the other inventory-only [RTX 30-series IDs](rtx30-pci.json), `Check` shows `OBSERVE`. Build and StageUnlock require a qualified candidate on every card.
 
 ## Start here
 

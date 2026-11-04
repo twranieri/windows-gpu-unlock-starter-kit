@@ -1,7 +1,7 @@
 # Card compatibility
 
-Version 0.2.1 adds read-only inventory for NVIDIA-listed RTX 30-series cards and
-extends the guarded one/two-card Windows LOCAL flow to two more configurations.
+Version 0.2.2 adds a guarded Maxsun RTX 3080 10GB LHR candidate and deeper
+read-only capture for other RTX 3080 10GB boards.
 Physical two-card boot, recovery and performance remain unverified.
 
 ## Check the PCI device ID first
@@ -15,6 +15,7 @@ in this kit's reviewed [source and patch](../experimental/dual-gpu/source.json) 
 | RTX 3060 Ti, selected variant | `24C9` | 8GB |
 | RTX 3070, selected variant | `2484` | 8GB |
 | MSI RTX 3070 Ti, subsystem `1462:5052` | `2482` | 8GB |
+| Maxsun RTX 3080 LHR, subsystem `7377:2000` | `2216` | 10GB |
 | RTX 3080 12GB | `220A` | 12GB |
 | RTX 3090 | `2204` | 24GB |
 | RTX 3090 Ti | `2203` | 24GB |
@@ -25,8 +26,8 @@ In Device Manager, open the NVIDIA display adapter's Properties, select Details,
 then Hardware Ids. `VEN_10DE&DEV_2206` means vendor `10DE`, device `2206`.
 
 All other variants in the [NVIDIA PCI catalog](../rtx30-pci.json) use the
-read-only `OBSERVE` route. That includes the RTX 3050, RTX 3060 8GB, RTX 3080
-10GB and LHR, RTX 3080 Ti, and RTX 30-series laptop models. The catalog covers
+read-only `OBSERVE` route. That includes the RTX 3050, RTX 3060 8GB, the original
+RTX 3080 10GB, other RTX 3080 LHR variants, RTX 3080 Ti, and laptop models. The catalog covers
 45 Ampere IDs plus three RTX 3050 A Laptop IDs branded as RTX 30 series by
 NVIDIA and built on Ada. RTX 20, 40 and 50 families outside that branding and
 unrecognized IDs are blocked.
@@ -36,6 +37,40 @@ The RTX 3080 `220A` candidate uses the upstream GA102/12GB and NVIDIA GOP
 start with a DisplayPort replug for display recovery. The MSI RTX 3070 Ti
 candidate uses the existing `b660m-3070ti` evidence for GA104/8GB with GOP
 `60010`. The new kit paths still need a supervised physical run. [RTX 3080 12GB report](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/issues/73) · [RTX 3070 Ti report](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/issues/4)
+
+## RTX 3080 10GB
+
+The Maxsun `2216` candidate must match GA102 `b72000a1`, 10,240 MiB, the
+published PROM hash, and NVIDIA GOP `6000a` with the exact reviewed code hash.
+The contributor's Windows success used an exact motherboard profile with its
+own console handling. This kit still applies its local console and ownership
+checks, so that reported boot does not establish a pass on this kit. [Maxsun hardware and source evidence](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/72)
+
+The original `2206` and LHR `2216` subsystems `1458:403f` and `1462:389b` can
+collect read-only chip, usable VRAM, PROM and driver evidence after the PCI
+resource and decode checks pass. Those captures are excluded from unlock build
+eligibility. The original MSI `2206` has a Windows success report using a
+separate display route on a specific machine. [MSI 2206 source and evidence](https://github.com/rough2515-hub/rtx3080-unlock-public/blob/a08254d269af30ace9e57237abd3d8e6c261e8f5/README.md) · [Gigabyte LHR capture proposal](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/118) · [MSI LHR capture report](https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/issues/236)
+
+## Retail memory configurations
+
+The catalog identifies the model family. The Windows driver reports capacity by
+PCI address, and the build gates use the exact usable VRAM from the cold probe.
+An OEM, reserved-memory or modified card can report a different value from the
+retail capacity. [NVIDIA desktop specifications](https://www.nvidia.com/en-gb/geforce/graphics-cards/compare/) · [NVIDIA laptop specifications](https://www.nvidia.com/en-in/geforce/laptops/compare/30-series/)
+
+| RTX 30 family | Desktop VRAM | Laptop VRAM |
+|---|---:|---:|
+| 3050 / 3050 Ti | 3050 6GB or 8GB | 3050 4GB or 6GB, 3050 Ti 4GB |
+| 3060 / 3060 Ti | 3060 8GB or 12GB, 3060 Ti 8GB | 3060 6GB |
+| 3070 / 3070 Ti | 8GB | 8GB |
+| 3080 / 3080 Ti | 3080 10GB or 12GB, 3080 Ti 12GB | 3080 8GB or 16GB, 3080 Ti 16GB |
+| 3090 / 3090 Ti | 24GB | — |
+
+The shared layout arithmetic passes RAM tests at 4, 6, 8, 10, 12, 16 and 24 GiB.
+Each unlock still depends on an admitted PCI ID, chip revision, usable VRAM,
+PROM and firmware topology. The branded RTX 3050 A Laptop is a separate 4GB
+Ada product and uses the inventory route.
 
 Support in the original Linux project, another Windows port or a newer upstream
 revision does not automatically apply to this pinned kit. Do not edit an ID list

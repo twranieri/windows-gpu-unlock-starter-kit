@@ -12,7 +12,8 @@ param(
 $script:UGPin='75071aa134616c3d65ad315e0cf2810bf34b191b'
 $script:UGKitRoot=$PSScriptRoot
 $script:UGDualSourceRoot=Join-Path $PSScriptRoot 'experimental/dual-gpu'
-$script:UGKnownIds=@('220410de','220310de','248710de','250410de','248410de','24c910de','220a10de','248210de')
+$script:UGKnownIds=@('220410de','220310de','248710de','250410de','248410de','24c910de','220a10de','248210de','221610de')
+$script:UGCandidateSubsystems=@{'2482'='50521462';'2216'='20007377'}
 
 function New-UGCheck($Name,$Status,$Detail,$RequiredFor=@('Probe','Build','StageUnlock')) {
     [pscustomobject]@{Name=$Name;Status=$Status;Detail=$Detail;RequiredFor=@($RequiredFor)}
@@ -85,9 +86,9 @@ function Get-UGGpuAssessment($Inventory,$AcceptedIds,[switch]$AllowObservation) 
             $device=$match.Groups[2].Value.ToLowerInvariant()
             $targets+=$device
             $identity=$device+'10de'
-            # The named MSI 3070 Ti evidence covers only this subsystem.
+            $requiredSubsystem=$script:UGCandidateSubsystems[$device]
             if($AcceptedIds -notcontains $identity -or $script:UGKnownIds -notcontains $identity -or
-               ($device -eq '2482' -and $pnp -notmatch '(?i)&SUBSYS_50521462(?=&|\\|$)')){$unqualified+=$device}
+               ($requiredSubsystem -and $pnp -notmatch ('(?i)&SUBSYS_'+$requiredSubsystem+'(?=&|\\|$)'))){$unqualified+=$device}
             continue
         }
         if([string]$row.Name -match '(?i)NVIDIA' -or $pnp -match '(?i)^PCI\\VEN_10DE'){$uncertain=$true}
@@ -137,6 +138,26 @@ function Find-UGExe([string]$Given,[string]$Name,[string]$Fallback) {
     if ($cmd -and $cmd.Source -notmatch '\\Microsoft\\WindowsApps\\') {return $cmd.Source}
     if ($Fallback -and (Test-Path -LiteralPath $Fallback -PathType Leaf)) {return $Fallback}
     return $null
+}
+function Get-UGDriverMemoryCheck {
+    $name='GPU memory reported by Windows driver'
+    try {
+        $fallback=Join-Path $env:ProgramFiles 'NVIDIA Corporation/NVSMI/nvidia-smi.exe'
+        $smi=Find-UGExe '' 'nvidia-smi.exe' $fallback
+        if(!$smi){throw 'nvidia-smi is unavailable.'}
+        $lines=@(& $smi '--query-gpu=pci.bus_id,memory.total' '--format=csv,noheader,nounits' 2>$null)
+        if($LASTEXITCODE -ne 0 -or !$lines.Count){throw 'NVIDIA did not return GPU memory information.'}
+        $devices=@()
+        foreach($line in $lines) {
+            if($line -notmatch '^\s*([0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7])\s*,\s*([1-9][0-9]{0,5})\s*$') {
+                throw 'Unexpected NVIDIA GPU memory information.'
+            }
+            $devices+=('{0} reports {1} MiB' -f $Matches[1],$Matches[2])
+        }
+        return New-UGCheck $name 'INFO' (($devices -join ', ')+'. The unlock profile uses the separate cold-boot VRAM measurement.') @()
+    } catch {
+        return New-UGCheck $name 'INFO' 'Driver memory information is unavailable. Use the cold-boot probe for exact profile evidence.' @()
+    }
 }
 function Get-UGPython([string]$Given) {
     $exe=Find-UGExe $Given 'python.exe' ''
@@ -238,11 +259,16 @@ function ConvertFrom-UGDiagnostic([string]$Text,[string]$FileName,[int]$Expected
     } elseif($Text -match '(?m)^dual-probe-') {
         $complete=$false;$reasons=@('Experimental whole-set capture requires the reviewed one/two-card source route.')
     }
+    $captureOnly=$Text -match '(?m)^[ \t]*probe-capture-only'
+    if($captureOnly) {
+        $complete=$false
+        $reasons+=@('Read-only research capture. This GPU configuration is outside the unlock evidence path.')
+    }
     if(!$complete -and !$reasons.Count){$reasons=@('Incomplete or unrecognized probe capture; review this file locally.')}
     if(!$complete -and ($reasons -match '^(?:dual|probe)-unreviewed-envelope ')) {
         $reasons+=@(Get-UGEnvelopeNotes $Text)
     }
-    [pscustomobject]@{File=$FileName;Complete=$complete;Reasons=$reasons;PairMode=[bool]$PairMode;TargetCount=$ExpectedTargets}
+    [pscustomobject]@{File=$FileName;Complete=$complete;CaptureOnly=$captureOnly;Reasons=$reasons;PairMode=[bool]$PairMode;TargetCount=$ExpectedTargets}
 }
 function Get-UGCaptureEvidence([string]$UsbLetter,[int]$ExpectedTargets=0,[switch]$PairMode) {
     $records=@()
@@ -258,7 +284,7 @@ function Get-UGCaptureEvidence([string]$UsbLetter,[int]$ExpectedTargets=0,[switc
     [pscustomobject]@{CompleteCount=@($records | Where-Object Complete).Count;Files=$records;PairMode=[bool]$PairMode;TargetCount=$ExpectedTargets}
 }
 function Get-UGCaptureCheck($Evidence) {
-    $failed=@($Evidence.Files | Where-Object {!$_.Complete})
+    $failed=@($Evidence.Files | Where-Object {!$_.Complete -and (!$_.CaptureOnly -or $_.Reasons.Count -gt 1)})
     if($Evidence.CompleteCount -ge 2){
         $detail=if($Evidence.PairMode){'At least two complete whole-set captures exist for the current '+$Evidence.TargetCount+' card(s).'}else{'At least two complete files exist.'}
         return New-UGCheck 'Existing probe evidence' 'INFO' ($detail+' Upstream must still verify agreement, exact identity, firmware and cold state. Older incomplete files are not counted.') @()
@@ -267,6 +293,9 @@ function Get-UGCaptureCheck($Evidence) {
         $summary=@($failed | Select-Object -First 3 | ForEach-Object {$_.File+': '+($_.Reasons -join '; ')}) -join ' | '
         $explanation=if($summary -match '(?:dual|probe)-unreviewed-envelope'){'The diagnostic refused the captured PCI identity or PCI resource/state conditions. '}else{'The diagnostic did not complete. '}
         return New-UGCheck 'Existing probe evidence' 'BLOCKED' ($explanation+$summary+' Build/StageUnlock remain blocked. Review the cause before an explicit Probe retry; unchanged reboots are not a fix. Preserve failed evidence locally.') @('Build','StageUnlock')
+    }
+    if(@($Evidence.Files | Where-Object CaptureOnly).Count){
+        return New-UGCheck 'Existing probe evidence' 'INFO' 'Read-only research captures are available. The unlock workflow requires captures for an admitted configuration.' @()
     }
     return New-UGCheck 'Existing probe evidence' 'INFO' 'No refused captures were found. Two separate complete cold captures are still required.' @()
 }
@@ -284,6 +313,7 @@ function Get-UGReadiness($Options) {
     if($source.Revision){$config.SourceRevision=$source.Revision}
     $config.SupportsProbeOnly=$source.Status -eq 'PASS' -and $source.Workflow -eq 'pair' -and $source.SupportsProbeOnly -eq $true
     $gpu=Get-UGGpuCheck $config.Repo -AllowObservation:$config.SupportsProbeOnly;$checks.Add($gpu)
+    if($Options.Action -eq 'Check'){$checks.Add((Get-UGDriverMemoryCheck))}
     $config.InventoryOnly=$gpu.Status -eq 'OBSERVE'
     if($gpu.TargetCount){$config.TargetCount=[int]$gpu.TargetCount}
     if($config.TargetCount -eq 2 -and $config.Workflow -ne 'pair') {

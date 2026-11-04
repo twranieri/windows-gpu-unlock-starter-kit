@@ -1,6 +1,6 @@
 # Step-by-step: one or two candidate GPUs
 
-**Experimental 0.2.1 test build.** Check the [candidate configurations and inventory coverage](COMPATIBILITY.md) first. Physical two-GPU boot, recovery and performance remain unverified.
+**Experimental 0.2.2 test build.** Check the [candidate configurations and inventory coverage](COMPATIBILITY.md) first. Physical two-GPU boot, recovery and performance remain unverified.
 
 ## 1. Prepare the PC and tools
 
@@ -20,6 +20,8 @@ Extract this version into a fresh folder and open administrator PowerShell there
 This obtains the reviewed source plus SHA-bound patch in `Windows-GPU-UNLOCK-dual-dev`, and the independently pinned firmware source. Existing production checkouts remain intact. Start selects the patched checkout automatically. `-Repo .\Windows-GPU-UNLOCK-dual-dev` can select it explicitly. Missing assets are expected until step 3; resolve other BLOCKED/UNKNOWN rows.
 
 If `Check` reports `OBSERVE`, go to step 5, boot the probe once after a full shutdown, and keep its diagnostic for review. Inventory collection needs the probe tools and a FAT32 USB. Steps 3–4 and 6–8 apply to the unlock path for a `CANDIDATE` setup.
+
+`Check` also shows the amount of GPU memory reported by the Windows driver when available. The probe measures usable VRAM again before the driver loads. An RTX 3080 capture marked `probe-capture-only=1` can be reviewed as research evidence and stays out of the build count.
 
 ## 3. Prepare firmware locally
 

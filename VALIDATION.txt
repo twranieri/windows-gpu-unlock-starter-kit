@@ -1,3 +1,15 @@
+Starter Kit 0.2.2 test build, 2026-11-04
+
+- All 58 RAM-only 10 GiB transactions passed with five verified firmware
+  assets, simulated PCI/MMIO/DMA, and a synthetic PROM. Exact reservation
+  arithmetic passed at 4, 6, 8, 10, 12, 16 and 24 GiB.
+- The probe passed 273 generic and 113 dual RAM checks. The dual EFI compiled
+  and passed PE checks. The C-to-Python capture round trip passed.
+- 86 Python checks covered exact identity, capacity, firmware fingerprint,
+  and PROM admission, along with existing legacy capture behavior.
+- Capture-only logs stayed out of write evidence in the runner and orchestration
+  checks on PowerShell 7 and 5.1. The new kit has no physical 10GB boot result.
+
 Starter Kit 0.2.1 test build, 2026-11-04
 
 - All 48 catalog IDs routed correctly in mocked Windows inventory. The 50 paired

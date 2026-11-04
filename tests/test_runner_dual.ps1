@@ -58,7 +58,10 @@ try {
     $msi3070ti=Video '2482'
     $msi3070ti.PNPDeviceID=$msi3070ti.PNPDeviceID.Replace('SUBSYS_00000000','SUBSYS_50521462')
     Assert-True ((Get-UGGpuAssessment @($msi3070ti) $script:UGKnownIds).Status -eq 'CANDIDATE') 'The exact MSI 3070 Ti subsystem was refused.'
-    foreach($id in @('2482','2206','2208','2584','25a2','28e3')) {
+    $maxsun3080=Video '2216'
+    $maxsun3080.PNPDeviceID=$maxsun3080.PNPDeviceID.Replace('SUBSYS_00000000','SUBSYS_20007377')
+    Assert-True ((Get-UGGpuAssessment @($maxsun3080) $script:UGKnownIds).Status -eq 'CANDIDATE') 'The exact Maxsun 3080 10 GB subsystem was refused.'
+    foreach($id in @('2482','2206','2216','2208','2584','25a2','28e3')) {
         $observation=Get-UGGpuAssessment @((Video '2204'),(Video $id)) $script:UGKnownIds -AllowObservation
         $ready=ReadyPair 2
         $ready.Checks=@($ready.Checks[0],$observation)
@@ -73,6 +76,11 @@ try {
     Assert-True (!$single.Complete) 'A one-card file counted as a two-card whole-set capture.'
     $whole=ConvertFrom-UGDiagnostic (PairLog 2) 'DIAG00.TXT' -ExpectedTargets 2 -PairMode
     Assert-True $whole.Complete 'Complete whole-set capture did not count.'
+    $researchLog=(PairLog 2).Replace('probe-pci-handles=00000002',"probe-capture-only=1`r`nprobe-pci-handles=00000002")
+    $research=ConvertFrom-UGDiagnostic $researchLog 'DIAG00.TXT' -ExpectedTargets 2 -PairMode
+    Assert-True ($research.CaptureOnly -and !$research.Complete) 'A finished capture-only log counted as unlock evidence.'
+    $researchCheck=Get-UGCaptureCheck ([pscustomobject]@{Files=@($research);CompleteCount=0;PairMode=$true;TargetCount=2})
+    Assert-True ($researchCheck.Status -eq 'INFO' -and $researchCheck.Detail -match 'research captures') 'A finished research capture was presented as a failed probe.'
     Assert-True (!(ConvertFrom-UGDiagnostic (PairLog 2) 'DIAG00.TXT').Complete) 'Dual log entered the legacy intake route.'
     foreach($text in @((PairLog 2).Replace('bus=0x0002','bus=0x0001'),
                        (PairLog 2).Replace('index=0001','index=0002'),

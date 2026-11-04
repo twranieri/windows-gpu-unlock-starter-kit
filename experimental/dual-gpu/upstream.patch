@@ -522,7 +522,7 @@ index 0e36f4e6b2a19a9cfea59df64fafb66da24ac393..5fc2eca4b8873ba6c6acaf0d17a826be
    EFI_BOOT_SERVICES *bs=t->BootServices;
    if(!bs->DisconnectController || !bs->RaiseTPL || !bs->RestoreTPL)return EFI_UNSUPPORTED;
 diff --git a/internal-boot/boot/probe.c b/internal-boot/boot/probe.c
-index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a12c320d6 100644
+index 1cc9a309fb9be694ace72ddce222f8adb1994c49..0f55e14b8bc4248911ee64ce19b9eb1430e3dee6 100644
 --- a/internal-boot/boot/probe.c
 +++ b/internal-boot/boot/probe.c
 @@ -33,6 +33,16 @@
@@ -574,7 +574,7 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
  
  #ifdef GU_PROBE_PRESERVE_CAPTURE
  /* No CREATE flag until absence was confirmed. Never replace an earlier capture.
-@@ -147,16 +171,29 @@ static VOID ProbeCaps(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io) {
+@@ -147,31 +171,53 @@ static VOID ProbeCaps(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io) {
  /* Host-test fixture only: the same PROM bytes that were hashed, never parsed here. */
  #if defined(GU_PROBE_GENERIC) || defined(GU_PROBE_DUMP_PROM)
  static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
@@ -607,7 +607,17 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
    if(!f->Flush || f->Flush(f)!=EFI_SUCCESS)Problem(c,"prom-flush",EFI_DEVICE_ERROR);
    if(f->Close(f)!=EFI_SUCCESS)Problem(c,"prom-close",EFI_DEVICE_ERROR);
  }
-@@ -168,10 +205,12 @@ static VOID DumpProm(CAPTURE *c,EFI_FILE_PROTOCOL *root,UINT8 *page) {
+ #endif
+ 
+ #ifdef GU_CHECKED_PROBE
++#ifdef GU_PROBE_GENERIC
++static BOOLEAN ProbeCaptureOnly(const UINT32 *cfg) {
++  if(cfg[0]==0x220610deU)return cfg[11] && cfg[11]!=0xffffffffU;
++  return cfg[0]==0x221610deU && (cfg[11]==0x403f1458U || cfg[11]==0x389b1462U);
++}
++#endif
+ /* Inventory never implies permission to read another GPU's register map.
+  * Generic reads accept the reviewed GA102, GA104 and GA106 identities;
   * named probes pin their own
   * PCI/subsystem and require the same 16 MiB, MEM1/BME0 resource envelope.
   * All allocation/protocol calls finish before the final identity/config recheck. */
@@ -618,20 +628,21 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
 -    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU || cfg[0]==0x24c910deU || cfg[0]==0x220a10deU;
 +    cfg[0]==0x248710deU || cfg[0]==0x250410deU || cfg[0]==0x248410deU ||
 +    cfg[0]==0x24c910deU || cfg[0]==0x220a10deU ||
-+    (cfg[0]==0x248210deU && cfg[11]==0x50521462U);
++    (cfg[0]==0x248210deU && cfg[11]==0x50521462U) ||
++    (cfg[0]==0x221610deU && cfg[11]==0x20007377U) || ProbeCaptureOnly(cfg);
  #else
    BOOLEAN identity=cfg[0]==GU_BOARD_ID && cfg[11]==GU_BOARD_SUBSYSTEM;
  #ifdef GU_BAR0_BASE
-@@ -192,7 +231,7 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
-       d->AddrSpaceGranularity==32 && d->AddrRangeMin==cfg[4] && d->AddrLen==0x1000000 &&
-       !d->AddrTranslationOffset && (d->AddrRangeMax==(UINT64)cfg[4]+0xffffff || d->AddrRangeMax==0xffffff) &&
-       end[0]==ACPI_END_TAG_DESCRIPTOR;
--    if(good) {
-+    if(good && record) {
+@@ -196,7 +242,7 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
        UINT8 sum=0;for(UINTN j=0;j<sizeof(*d)+2;j++)sum=(UINT8)(sum+((const UINT8 *)d)[j]);
        if(end[1] && sum)good=FALSE;
      }
-@@ -207,6 +246,9 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
+-    if(good) {
++    if(good && record) {
+       UINT8 observed[sizeof(*d)+2];
+       for(UINTN j=0;j<sizeof(observed);j++)observed[j]=((const UINT8 *)d)[j];
+       Text(c,"pci-bar0-resource raw=");
+@@ -207,6 +253,9 @@ static BOOLEAN ProbeEnvelope(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cf
    if(raw && release(raw)!=EFI_SUCCESS)good=FALSE;
    return good;
  }
@@ -641,7 +652,7 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
  static BOOLEAN ProbeUnchanged(CAPTURE *c,EFI_HANDLE handle,EFI_PCI_IO_PROTOCOL *io,const UINT32 *cfg,UINTN expectedSegment,UINTN expectedBus) {
    EFI_PCI_IO_PROTOCOL *current=NULL;UINTN seg=~(UINTN)0,bus=~(UINTN)0,dev=~(UINTN)0,fun=~(UINTN)0;UINT32 now[64];
    /* Every byte differs from its expected value; successful short output cannot
-@@ -219,6 +261,71 @@ static BOOLEAN ProbeUnchanged(CAPTURE *c,EFI_HANDLE handle,EFI_PCI_IO_PROTOCOL *
+@@ -219,6 +268,71 @@ static BOOLEAN ProbeUnchanged(CAPTURE *c,EFI_HANDLE handle,EFI_PCI_IO_PROTOCOL *
    for(UINTN j=0;j<64;j++)if(now[j]!=cfg[j])return FALSE;
    return TRUE;
  }
@@ -713,7 +724,28 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
  #endif
  static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROTOCOL *root,
                       EFI_HANDLE handle,const UINT32 *cfg,UINTN expectedSegment,UINTN expectedBus) {
-@@ -244,6 +351,11 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+@@ -232,6 +346,10 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+   GU_PROBE_PIN pin;
+   if(!GuProbeTakePin(c,io,&pin)){Problem(c,"probe-capabilities",EFI_NOT_READY);return;}
+   if(!ProbeEnvelope(c,io,cfg)){Problem(c,"probe-unreviewed-envelope",EFI_UNSUPPORTED);return;}
++#ifdef GU_PROBE_GENERIC
++  const BOOLEAN checkGa102=cfg[0]==0x220610deU || cfg[0]==0x221610deU;
++  if(ProbeCaptureOnly(cfg)){Text(c,"probe-capture-only=1");End(c);}
++#endif
+   if(!GuProbePinSame(c,&pin)){Problem(c,"probe-capabilities-changed",EFI_NOT_READY);return;}
+   s=pin.Allocate(EfiBootServicesData,0x100000,(VOID **)&page);
+   if(s!=EFI_SUCCESS || !page){if(page)pin.Free(page);Problem(c,"prom-alloc",s==EFI_SUCCESS?EFI_OUT_OF_RESOURCES:s);return;}
+@@ -241,9 +359,21 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+    * any release instead of stopping mid-release. A protocol call, so it precedes the recheck. */
+   UINT64 pciAttributes=0;
+   EFI_STATUS attributesStatus=io->Attributes?io->Attributes(io,EfiPciIoAttributeOperationGet,0,&pciAttributes):EFI_UNSUPPORTED;
++#ifdef GU_PROBE_GENERIC
++  const UINT64 decodeMask=EFI_PCI_IO_ATTRIBUTE_IO|EFI_PCI_IO_ATTRIBUTE_MEMORY|EFI_PCI_IO_ATTRIBUTE_BUS_MASTER;
++  const UINT64 expectedDecode=EFI_PCI_IO_ATTRIBUTE_MEMORY|(cfg[1]&1U?EFI_PCI_IO_ATTRIBUTE_IO:0);
++  if(checkGa102 && (attributesStatus!=EFI_SUCCESS || (pciAttributes&decodeMask)!=expectedDecode)) {
++    pin.Free(page);Problem(c,"probe-attribute-envelope",EFI_UNSUPPORTED);return;
++  }
++#endif
    if(!GuProbePinSame(c,&pin) || !ProbeUnchanged(c,handle,io,cfg,expectedSegment,expectedBus) || !GuProbePinSame(c,&pin)) {
      pin.Free(page);Problem(c,"probe-identity-changed",EFI_NOT_READY);return;
    }
@@ -725,7 +757,28 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
  #else
    (void)handle;(void)cfg;(void)expectedSegment;(void)expectedBus;
  #endif
-@@ -337,9 +449,65 @@ static VOID ProbeGops(CAPTURE *c) {
+@@ -255,6 +385,20 @@ static VOID ProbeBar(CAPTURE *c,EFI_PCI_IO_PROTOCOL *io,UINT32 bar,EFI_FILE_PROT
+   for(UINTN i=0;i<sizeof(offs)/sizeof(offs[0]);i++) {
+     values[i]=0xdeadbeef;
+     statuses[i]=io->Mem.Read(io,EfiPciIoWidthUint32,0,offs[i],1,&values[i]);
++#ifdef GU_PROBE_GENERIC
++    if(i==0 && checkGa102) {
++      /* One chip-ID read is the only permitted MMIO until the exact GA102
++         revision is observed. Revalidate the target set after that callback. */
++      if(statuses[0]!=EFI_SUCCESS || values[0]!=0xb72000a1U) {
++        pin.Free(page);Problem(c,"probe-unreviewed-ga102-chip",EFI_UNSUPPORTED);return;
++      }
++      if(!GuProbePinSame(c,&pin) || !ProbeUnchanged(c,handle,io,cfg,expectedSegment,expectedBus) || !GuProbePinSame(c,&pin)
++#ifdef GU_PROBE_DUAL
++         || !DualSnapshotSame(c) || !GuProbePinSame(c,&pin)
++#endif
++        ){pin.Free(page);Problem(c,"probe-chip-identity-changed",EFI_NOT_READY);return;}
++    }
++#endif
+   }
+   s=EFI_SUCCESS;
+   for(UINTN i=0;i<0x100000/4 && s==EFI_SUCCESS;i++)
+@@ -337,9 +481,65 @@ static VOID ProbeGops(CAPTURE *c) {
    Text(c," conin=0x");Hex(c,(UINTN)SysT->ConsoleInHandle,12);End(c);
  }
  
@@ -791,7 +844,7 @@ index 1cc9a309fb9be694ace72ddce222f8adb1994c49..8cbe3b2924665ebf8868b7b53cca839a
  #ifdef GU_PROBE_PARENT_BASELINE
    /* A distinct diagnostic invocation owns a fresh observation, never a retry of
     * a correction transaction. Static storage keeps it off the firmware stack. */
-@@ -463,4 +631,5 @@ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
+@@ -463,4 +663,5 @@ EFI_STATUS GuProbeGpu(EFI_SYSTEM_TABLE *t,CAPTURE *c) {
    if(root)ProbeDrivers(c,root);else Problem(c,"dump-volume",EFI_NOT_FOUND);
    /* Report a target that could not be captured rather than a clean success. */
    return found?cfgError:EFI_NOT_FOUND;
@@ -988,10 +1041,10 @@ index 0000000000000000000000000000000000000000..46f77ee719368e42bf4a152a80d732be
 +}
 diff --git a/internal-boot/boot/test_probe_dual.c b/internal-boot/boot/test_probe_dual.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a383e5d4c
+index 0000000000000000000000000000000000000000..bd5f0e14b73a5a4534505a913ec4d90c5e974b37
 --- /dev/null
 +++ b/internal-boot/boot/test_probe_dual.c
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,216 @@
 +/* GPL-2.0-only. Real dual probe, RAM-only EFI services. No hardware APIs. */
 +#define GU_PROBE_PARENT_FIXTURE
 +#include "test_probe_generic.c"
@@ -999,7 +1052,9 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +
 +enum {D_OK,D_SINGLE,D_THIRD,D_UNKNOWN,D_DUP_BDF,D_DUP_IO,D_BAD_RESOURCE,D_BME,
 +      D_PEER_ATTR,D_PEER_CALLBACK,D_THIRD_LATE,D_SHORT_CFG,D_PEER_AFTER_PROM,
-+      D_SHORT_DUMP,D_BAD_LOCATION,D_ENUM_REVERSED,D_ADDED_MODELS,D_FOREIGN_3070TI};
++      D_SHORT_DUMP,D_BAD_LOCATION,D_ENUM_REVERSED,D_ADDED_MODELS,D_FOREIGN_3070TI,
++      D_MAXSUN_2216,D_CAPTURE_2206,D_CAPTURE_2216_GIGABYTE,D_CAPTURE_2216_MSI,
++      D_FOREIGN_2216,D_CAPTURE_BAD_RESOURCE,D_CAPTURE_BAD_ATTR,D_BAD_CHIP,D_SHORT_CHIP,D_CHIP_DRIFT};
 +static EFI_PCI_IO_PROTOCOL Cards[3];
 +static EFI_HANDLE CardHandles[3]={(VOID *)101,(VOID *)102,(VOID *)103};
 +static UINT32 Configs[3][64];
@@ -1027,9 +1082,14 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +  int i=CardIndex(io);(void)n;if(i<0 || w!=EfiPciIoWidthUint32 || bar)return EFI_UNSUPPORTED;
 +  if(at>=0x300000 && at<0x400000){CardProm[i]++;S.PromReads++;}
 +  else{CardRegs[i]++;S.RegReads++;}
++  BOOLEAN tenGiB=Configs[i][0]==0x220610deU || Configs[i][0]==0x221610deU;
 +  UINT32 value=(UINT32)at+((UINT32)i<<28);
 +  switch(at){
-+    case 0:value=i==1?0xb74000a1U:0xb72000a1U;break;
++    case 0:
++      if(tenGiB && DualMode==D_SHORT_CHIP)return EFI_SUCCESS;
++      if(tenGiB && DualMode==D_CHIP_DRIFT)Configs[0][11]^=1U;
++      value=tenGiB?(DualMode==D_BAD_CHIP?0xb74000a1U:0xb72000a1U):(i==1?0xb74000a1U:0xb72000a1U);
++      break;
 +    case 0x823804:value=0xffffff8fU;break;
 +    case 0x118128:value=0x8b8fU;break;
 +    case 0x118234:value=0x3ffU;break;
@@ -1037,7 +1097,7 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +    case 0x1fa828:value=0;break;
 +    case 0x82381c:value=0x03000062U;break;
 +    case 0x823820:value=6;break;
-+    case 0x1183a4:value=i==1?0x2000U:(DualMode==D_ADDED_MODELS?0x3000U:0x6000U);break;
++    case 0x1183a4:value=tenGiB?0x2800U:(i==1?0x2000U:(DualMode==D_ADDED_MODELS?0x3000U:0x6000U));break;
 +  }
 +  *(UINT32 *)data=value;
 +  if(DualMode==D_PEER_AFTER_PROM && i==1 && CardProm[i]==PROM_DWORDS)Configs[0][11]^=1U;
@@ -1049,13 +1109,13 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +  EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR *d=(VOID *)raw;
 +  d->Desc=ACPI_ADDRESS_SPACE_DESCRIPTOR;d->Len=sizeof(*d)-3;d->AddrSpaceGranularity=32;
 +  d->AddrRangeMin=Configs[i][4];d->AddrRangeMax=(UINT64)Configs[i][4]+0xffffff;
-+  d->AddrLen=DualMode==D_BAD_RESOURCE && i==0?0x800000:0x1000000;
++  d->AddrLen=(DualMode==D_BAD_RESOURCE || DualMode==D_CAPTURE_BAD_RESOURCE) && i==0?0x800000:0x1000000;
 +  raw[sizeof(*d)]=ACPI_END_TAG_DESCRIPTOR;*out=raw;return EFI_SUCCESS;
 +}
 +static EFI_STATUS EFIAPI DualAttr(EFI_PCI_IO_PROTOCOL *io,EFI_PCI_IO_PROTOCOL_ATTRIBUTE_OPERATION op,UINT64 mask,UINT64 *value) {
 +  int i=CardIndex(io);
 +  if(i<0 || op!=EfiPciIoAttributeOperationGet || mask || !value){AttributeOthers++;return EFI_UNSUPPORTED;}
-+  AttributeGets++;*value=0x200;
++  AttributeGets++;*value=DualMode==D_CAPTURE_BAD_ATTR && i==0?0x300:0x200;
 +  if(i==1 && DualMode==D_PEER_ATTR)Configs[0][11]^=1U;
 +  if(i==1 && DualMode==D_PEER_CALLBACK)Cards[0].Mem.Read=NULL;
 +  return EFI_SUCCESS;
@@ -1103,7 +1163,9 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +  PromCreates[slot]++;RootOpens++;*out=&PromFiles[slot];return EFI_SUCCESS;
 +}
 +static void DualSetup(int mode) {
-+  GenericSetup(G_OK);DualMode=mode;CardCount=mode==D_SINGLE?1:(mode==D_THIRD?3:2);PciEnums=0;
++  GenericSetup(G_OK);DualMode=mode;
++  CardCount=mode==D_SINGLE || mode==D_BAD_CHIP || mode==D_SHORT_CHIP || mode==D_CAPTURE_BAD_ATTR?1:(mode==D_THIRD?3:2);
++  PciEnums=0;
 +  memset(CardRegs,0,sizeof(CardRegs));memset(CardProm,0,sizeof(CardProm));memset(PromCreates,0,sizeof(PromCreates));memset(DumpWords,0,sizeof(DumpWords));
 +  for(UINTN i=0;i<3;i++){
 +    Cards[i]=Pci;Cards[i].Pci.Read=DualRead;Cards[i].GetLocation=DualLocation;Cards[i].Mem.Read=DualMem;Cards[i].GetBarAttributes=DualBar;Cards[i].Attributes=DualAttr;
@@ -1111,12 +1173,24 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +    Configs[i][1]=2;Configs[i][2]=0x030000a1;Configs[i][4]=0xf6000000U+(UINT32)i*0x1000000U;Configs[i][11]=0x100010deU+(UINT32)i;
 +    Segments[i]=i==0?1:0;Buses[i]=i==0?5:43+i;
 +  }
-+  if(mode==D_UNKNOWN)Configs[0][0]=0x220610deU; /* RTX 3080 10GB remains outside scope */
++  if(mode==D_UNKNOWN)Configs[0][0]=0x220810deU; /* RTX 3080 Ti remains outside scope */
 +  if(mode==D_ADDED_MODELS)Configs[0][0]=0x220a10deU;
 +  if(mode==D_ADDED_MODELS || mode==D_FOREIGN_3070TI) {
 +    Configs[1][0]=0x248210deU;
 +    Configs[1][11]=mode==D_ADDED_MODELS?0x50521462U:0x50531462U;
 +  }
++  if(mode>=D_MAXSUN_2216 && mode<=D_FOREIGN_2216) {
++    Configs[0][0]=mode==D_CAPTURE_2206?0x220610deU:0x221610deU;
++    switch(mode) {
++      case D_MAXSUN_2216:Configs[0][11]=0x20007377U;break;
++      case D_CAPTURE_2206:Configs[0][11]=0x40611458U;break;
++      case D_CAPTURE_2216_GIGABYTE:Configs[0][11]=0x403f1458U;break;
++      case D_CAPTURE_2216_MSI:Configs[0][11]=0x389b1462U;break;
++      default:Configs[0][11]=0x389c1462U;break;
++    }
++  }
++  if(mode>=D_CAPTURE_BAD_RESOURCE && mode<=D_SHORT_CHIP)Configs[0][0]=0x220610deU;
++  if(mode==D_CHIP_DRIFT)Configs[1][0]=0x220610deU;
 +  if(mode==D_DUP_BDF){Segments[1]=Segments[0];Buses[1]=Buses[0];}
 +  if(mode==D_BME)Configs[0][1]=6;
 +  Bs.LocateHandleBuffer=DualLocate;Bs.HandleProtocol=DualHandle;Bs.ProtocolsPerHandle=DualProtocols;
@@ -1162,12 +1236,25 @@ index 0000000000000000000000000000000000000000..902c696432644ca90670c0e38bde6e8a
 +  Check(DualRun(D_ENUM_REVERSED)==EFI_SUCCESS && DumpWords[0]==0x10300000U && DumpWords[1]==0x00300000U,"changing enumeration order does not reassign PROM identities");
 +  Check(DualRun(D_ADDED_MODELS)==EFI_SUCCESS && CardRegs[0]==16 && CardRegs[1]==16 &&
 +    CardProm[0]==PROM_DWORDS && CardProm[1]==PROM_DWORDS,"both additional reviewed identities keep bounded dual reads");
-+  const int refuse[]={D_THIRD,D_UNKNOWN,D_FOREIGN_3070TI,D_DUP_BDF,D_DUP_IO,D_BAD_RESOURCE,D_BME,D_PEER_ATTR,D_PEER_CALLBACK,D_THIRD_LATE,D_SHORT_CFG,D_BAD_LOCATION};
++  Check(DualRun(D_MAXSUN_2216)==EFI_SUCCESS && CardRegs[0]==16 && CardProm[0]==PROM_DWORDS &&
++        !Logged("probe-capture-only"),"exact Maxsun tuple is captured without the research-only marker");
++  for(int mode=D_CAPTURE_2206;mode<=D_CAPTURE_2216_MSI;mode++){
++    Check(DualRun(mode)==EFI_SUCCESS && CardRegs[0]==16 && CardProm[0]==PROM_DWORDS &&
++          Logged("probe-capture-only=1"),"research-only RTX 3080 emits bounded evidence and an exclusion marker");
++  }
++  const int refuse[]={D_THIRD,D_UNKNOWN,D_FOREIGN_3070TI,D_FOREIGN_2216,D_DUP_BDF,D_DUP_IO,D_BAD_RESOURCE,
++                      D_CAPTURE_BAD_RESOURCE,D_CAPTURE_BAD_ATTR,D_BME,D_PEER_ATTR,D_PEER_CALLBACK,D_THIRD_LATE,D_SHORT_CFG,D_BAD_LOCATION};
 +  for(UINTN i=0;i<sizeof(refuse)/sizeof(refuse[0]);i++){
 +    Check(DualRun(refuse[i])!=EFI_SUCCESS,"invalid or changed target set refuses the entire capture");
 +    Check(!CardRegs[0] && !CardRegs[1] && !CardRegs[2] && !CardProm[0] && !CardProm[1] && !CardProm[2],"preflight/peer change permits no MMIO or PROM reads on either card");
 +    Check(!Logged("capture-complete=1"),"refused pair cannot be reported complete");
 +  }
++  for(int mode=D_BAD_CHIP;mode<=D_SHORT_CHIP;mode++){
++    Check(DualRun(mode)!=EFI_SUCCESS && CardRegs[0]==1 && !CardProm[0] && !Logged("capture-complete=1"),
++          "wrong or unread chip ID permits no further MMIO or PROM read");
++  }
++  Check(DualRun(D_CHIP_DRIFT)!=EFI_SUCCESS && CardRegs[1]==1 && !CardProm[1] && !CardRegs[0] && !CardProm[0],
++        "identity drift caused by the chip-ID read stops both targets before any extended read");
 +  Check(DualRun(D_PEER_AFTER_PROM)!=EFI_SUCCESS && CardProm[1]==PROM_DWORDS && !CardProm[0] && !Logged("capture-complete=1"),"a peer change after the first batch invalidates the whole capture and prevents the second batch");
 +  Check(DualRun(D_SHORT_DUMP)!=EFI_SUCCESS && !Logged("capture-complete=1"),"short PROM dump invalidates the capture");
 +  if(argc==3)EmitSynthetic(argv[2]);
@@ -1630,6 +1717,25 @@ index 0000000000000000000000000000000000000000..d54c4ed9bc538957011b7e9f0d8b0cee
 +    $Manifest.LocalProfileTreeSha256 -cne $e.TreeSha256 -or
 +    $Manifest.LocalProfileEvidenceSha256 -cne (Get-GuSha256 (Join-Path $Repo 'research/dual/local/test-results.json'))){throw 'Pair USB package inputs or evidence changed'}
 +}
+diff --git a/internal-boot/unlock/gpu-family.h b/internal-boot/unlock/gpu-family.h
+index 038c582a1750b623b223996c1db2e82d3914af52..95e00035732e10bb4d46f0cde4a28f4bad508108 100644
+--- a/internal-boot/unlock/gpu-family.h
++++ b/internal-boot/unlock/gpu-family.h
+@@ -33,9 +33,11 @@
+ #if GU_GPU_FAMILY == GU_GPU_FAMILY_GA102
+ #define GU_GPU_FAMILY_NAME "GA102"
+ #define GU_FAMILY_CHIP_ID 0xb72000a1U
+-/* Existing 3090/3090 Ti combinations are unchanged. Issue #73 adds only
+- * the GA102 RTX 3080 12 GiB tuple, not a free ID/memory cross product. */
+-#if !(((GU_BOARD_ID == 0x220410deU || GU_BOARD_ID == 0x220310deU) && (GU_DEVICE_MEMORY_SIZE == 0x6000U || GU_DEVICE_MEMORY_SIZE == 0x5ff4U)) || (GU_BOARD_ID == 0x220a10deU && GU_DEVICE_MEMORY_SIZE == 0x3000U))
++/* The 3080 entries pin separate evidence-backed tuples. PR #72 records
++ * the exact Maxsun 10 GiB subsystem; issue #73 covers the 12 GiB model. */
++#if !(((GU_BOARD_ID == 0x220410deU || GU_BOARD_ID == 0x220310deU) && (GU_DEVICE_MEMORY_SIZE == 0x6000U || GU_DEVICE_MEMORY_SIZE == 0x5ff4U)) || \
++      (GU_BOARD_ID == 0x220a10deU && GU_DEVICE_MEMORY_SIZE == 0x3000U) || \
++      (GU_BOARD_ID == 0x221610deU && defined(GU_BOARD_SUBSYSTEM) && GU_BOARD_SUBSYSTEM == 0x20007377U && GU_DEVICE_MEMORY_SIZE == 0x2800U))
+ #error Card identity or memory is outside the reviewed GA102 family combinations
+ #endif
+ #elif GU_GPU_FAMILY == GU_GPU_FAMILY_GA104
 diff --git a/internal-boot/unlock/headless-policy.h b/internal-boot/unlock/headless-policy.h
 index 08188f7ed37be1ab273792f5350d43c31544aeee..b73ff8f33ab1915facc4d2f61a33e58367d395bd 100644
 --- a/internal-boot/unlock/headless-policy.h
@@ -2313,6 +2419,35 @@ index dbd7af75b5ba1046bd309843b7313bd5837f168b..dfb88bf1d88b5d3c9849f512cc48fada
  }
  #endif
  
+diff --git a/internal-boot/unlock/tests/test_gpu_families.py b/internal-boot/unlock/tests/test_gpu_families.py
+index a23fc63bf116e41f9c90e8a96666c82825e35a3c..c17c0c917a439ca80d398f9e02783b802b92bce1 100644
+--- a/internal-boot/unlock/tests/test_gpu_families.py
++++ b/internal-boot/unlock/tests/test_gpu_families.py
+@@ -74,6 +74,24 @@ class FamilyTests(unittest.TestCase):
+             ['-DGU_PROFILE_LOCAL','-DGU_BOARD_ID=0x220a10deU','-DGU_DEVICE_MEMORY_SIZE=0x3000U','-DGU_CHIP_ID=0xb72000a1U'])
+         self.assertEqual(done.returncode,0,done.stderr)
+ 
++    def test_rtx3080_10gb_uses_only_the_exact_maxsun_family_tuple(self):
++        source='#include "gpu-family.h"\n_Static_assert(GU_GPU_FAMILY == 102, "GA102");\n'
++        cases=[(0x221610de,0x20007377,0x2800,0xb72000a1,True),
++               (0x221610de,0x403f1458,0x2800,0xb72000a1,False),
++               (0x221610de,0x389b1462,0x2800,0xb72000a1,False),
++               (0x221610de,None,0x2800,0xb72000a1,False),
++               (0x221610de,0x20007377,0x3000,0xb72000a1,False),
++               (0x221610de,0x20007377,0x2800,0xb72000a2,False),
++               (0x220610de,0x40611458,0x2800,0xb72000a1,False)]
++        for board,subsystem,memory,chip,expected in cases:
++            with self.subTest(board=board,subsystem=subsystem,memory=memory,chip=chip):
++                defines=['-DGU_PROFILE_LOCAL',f'-DGU_BOARD_ID={board}U',
++                         f'-DGU_DEVICE_MEMORY_SIZE={memory}U',f'-DGU_CHIP_ID={chip}U']
++                if subsystem is not None:
++                    defines.append(f'-DGU_BOARD_SUBSYSTEM={subsystem}U')
++                done=compile_source(source,defines)
++                self.assertEqual(done.returncode==0,expected,done.stderr)
++
+     def test_profile_family_and_firmware_cannot_be_overridden(self):
+         for define in ('GU_GPU_FAMILY=104', 'GU_FIRMWARE_PROFILE=2', 'GU_GPU_FAMILY_GA102=104',
+                        'GU_FIRMWARE_AMI_B650M_3057=2'):
 diff --git a/internal-boot/unlock/tests/test_port.c b/internal-boot/unlock/tests/test_port.c
 index 64dabaa239ca194d57369bb7374cb90c176dd296..64301dc342f45fb77bed626a0b605a3984fe65ea 100644
 --- a/internal-boot/unlock/tests/test_port.c
@@ -2508,12 +2643,49 @@ index 0000000000000000000000000000000000000000..a6441625d36537c0f960671468148b1a
 +#endif
 +  return 0;
 +}
+diff --git a/internal-boot/unlock/tests/test_transaction_3080.c b/internal-boot/unlock/tests/test_transaction_3080.c
+index 955999b3fc90251a8f39dce34fcdc6167c610a4d..a1c845aee8b7804acf61060d1beb2d90f414d50c 100644
+--- a/internal-boot/unlock/tests/test_transaction_3080.c
++++ b/internal-boot/unlock/tests/test_transaction_3080.c
+@@ -325,10 +325,32 @@ static void check_captured_profile_layout(void) {
+     puts("Captured MSI 10 GiB layout and pre-firmware no-write contract: PASS");
+ }
+ 
++static void check_synthetic_vram_layouts(void) {
++    static const u32 sizes_gib[]={4,6,8,10,12,16,24};
++    for (size_t i=0;i<sizeof(sizes_gib)/sizeof(sizes_gib[0]);i++) {
++        struct unlock_transaction_work w;
++        u64 top=(u64)sizes_gib[i]<<30;
++        setup(&w);
++        regs[0x1183a4/4]=sizes_gib[i]*1024;
++        regs[0x1fa7c8/4]=1;
++        regs[0x1fa82c/4]=0xfffffff0; /* No valid MMU lock. */
++        w.image_span.size=0x5053000;
++        w.boot_desc.image_size=0x6000;
++        assert(!unlock_transaction_layout(&w));
++        assert(w.layout_in.usable_fb==top && !w.layout_in.mmu_lock_valid);
++        assert(w.layout.wpr_end==top-(1ull<<20));
++        assert(w.layout.frts_offset==top-(2ull<<20));
++        assert(w.layout.nonwpr_start==top-(173ull<<20));
++        assert(!fake.writes && !fake.allocs && !fake.starts && !fake.flrs);
++    }
++    puts("Synthetic 4/6/8/10/12/16/24 GiB layout arithmetic: PASS (RAM only)");
++}
++
+ int main(int argc, char **argv) {
+     setvbuf(stdout,NULL,_IONBF,0);
+     captured_prom=argc>=2 && strcmp(argv[1],"-");
+     check_captured_profile_layout();
++    check_synthetic_vram_layouts();
+     struct unlock_transaction_work w;
+     setup(&w);
+     regs[0x110118/4]=0x1230;
 diff --git a/research/dual/analyze_pair.py b/research/dual/analyze_pair.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8eded27e0fd2916c0d6dfd3711e9db62c3d9c835
+index 0000000000000000000000000000000000000000..7e75cee0c2887890de0758c68dd7641e3846c5c6
 --- /dev/null
 +++ b/research/dual/analyze_pair.py
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,184 @@
 +"""Offline validation of experimental one/two-card read-only captures.
 +
 +This produces private capture evidence, NEVER an arming profile, build permit or
@@ -2530,7 +2702,7 @@ index 0000000000000000000000000000000000000000..8eded27e0fd2916c0d6dfd3711e9db62
 +
 +REPO = Path(__file__).resolve().parents[2]
 +ALLOWED = frozenset(('220410de', '220310de', '248710de', '250410de', '248410de', '24c910de',
-+                     '220a10de', '248210de'))
++                     '220a10de', '248210de', '221610de'))
 +COLD = (0, 0x823804, 0x118128, 0x118234, 0x110100, 0x1fa828, 0x82381c, 0x823820, 0x1183a4)
 +PCI_IO = '4cf5b200-68b8-4ca5-9eec-b23e3f50029a'
 +_spec = importlib.util.spec_from_file_location('dual_capture_graph', REPO / 'research/profile/capture_graph.py')
@@ -2604,13 +2776,17 @@ index 0000000000000000000000000000000000000000..8eded27e0fd2916c0d6dfd3711e9db62
 +    require(all(offset in mmio for offset in COLD), 'Incomplete cold-state observations')
 +    chip, plm, g1, g2, g3, wpr, ss0, ss1, memory = (mmio[offset] for offset in COLD)
 +    chips = [entry for entry in envelope['chips'] if int(entry['chip'], 16) == chip]
-+    require(len(chips) == 1 and f'{memory:x}' in chips[0]['pci_memory'].get(ident, []), 'Unreviewed chip/device/VRAM tuple')
++    require(len(chips) == 1 and f'{memory:x}' in chips[0]['pci_memory'].get(ident, []),
++            f'Unreviewed chip/device/VRAM tuple (PCI {ident}, chip 0x{chip:08x}, usable {memory} MiB)')
 +    require((plm, g1, g2, g3, wpr) == (0xffffff8f, 0x8b8f, 0x3ff, 0x10, 0) and
 +            ss1 <= 15 and ss0 not in (0xffffffff, 0x88888888) and ss0 & 0xffff0000 != 0xbadf0000,
 +            'Card is not in the required power-on state')
 +    name = record(text, 'prom dump=', r'prom dump=(PROM[0-9]{2}\.BIN)')[1]
 +    require(name == f'PROM{ordinal:02d}.BIN', 'PROM filename does not match the BDF-ordered card ordinal')
 +    digest = record(text, 'prom sha256=', r'prom sha256=([0-9a-f]{64})')[1]
++    prom_pins = envelope.get('profile_prom_sha256', {})
++    require(ident not in prom_pins or digest in prom_pins[ident],
++            'PROM hash is outside the reviewed device envelope')
 +    prom = directory / name
 +    require(not prom.is_symlink() and prom.is_file() and prom.stat().st_size == 0x100000, 'Need that card\'s exact 1MiB PROM file')
 +    require(hashlib.sha256(prom.read_bytes()).hexdigest() == digest, 'PROM hash mismatch; do not swap cards\' ROM files')
@@ -2624,6 +2800,8 @@ index 0000000000000000000000000000000000000000..8eded27e0fd2916c0d6dfd3711e9db62
 +    require(not path.is_symlink() and path.is_file() and path.stat().st_size <= 8 * 1024 * 1024, 'Need a bounded regular capture file')
 +    raw = path.read_bytes()
 +    text = raw.decode('utf-8-sig').replace('\r\n', '\n')
++    require(not any(line.startswith('probe-capture-only') for line in text.splitlines()),
++            'Capture-only observations cannot authorize a write profile')
 +    require(text.splitlines().count('dual-probe-v1 max-targets=2 readonly=1') == 1, 'Need the explicit experimental dual-probe format')
 +    require(not any(line.startswith('incomplete ') for line in text.splitlines()), 'Probe reported an incomplete capture')
 +    try:
@@ -3210,10 +3388,10 @@ index 0000000000000000000000000000000000000000..f9806394c5c5f253f706be8f2cbc498e
 +    raise SystemExit(main())
 diff --git a/research/dual/new-machine.ps1 b/research/dual/new-machine.ps1
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb4c07b520f88bc25fa19d860c2ddd01e4608039
+index 0000000000000000000000000000000000000000..13a30c18952cbc54d84d5480886a8731ebe9a66c
 --- /dev/null
 +++ b/research/dual/new-machine.ps1
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,171 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +# Resumable one/two-card flow: whole-set probe -> actual-input host jobs -> USB.
 +# Files only. Never partitions/formats, changes boot order, or runs a GPU unlock.
@@ -3272,6 +3450,7 @@ index 0000000000000000000000000000000000000000..cb4c07b520f88bc25fa19d860c2ddd01
 +    foreach($file in @(Get-ChildItem -LiteralPath $Directory -Filter 'DIAG??.TXT' -File -ErrorAction SilentlyContinue)) {
 +        if($file.Name -cnotmatch '^DIAG[0-9]{2}\.TXT$' -or $file.Length -gt 8MB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)){continue}
 +        $text=[IO.File]::ReadAllText($file.FullName).Replace("`r`n","`n")
++        if([regex]::IsMatch($text,'(?im)^[ \t]*probe-capture-only')){continue}
 +        $summary=@([regex]::Matches($text,'(?m)^probe targets=([0-9a-f]{4}) cfg-incomplete=0000$'))
 +        $parts=@([regex]::Matches($text,'(?ms)^dual-card-begin index=([0-9a-f]{4})\n(.*?)^dual-card-end index=\1\n'))
 +        if(@([regex]::Matches($text,'(?m)^dual-probe-v1 max-targets=2 readonly=1$')).Count -ne 1 -or
@@ -3425,10 +3604,10 @@ index 0000000000000000000000000000000000000000..9318f975b6fca8729b820af9c39a608f
 +Write-Host 'PASS four synthetic EFI compile/link/PE controls; no boot, hardware or passing qualification evidence.'
 diff --git a/research/dual/test-orchestration.ps1 b/research/dual/test-orchestration.ps1
 new file mode 100644
-index 0000000000000000000000000000000000000000..f5660f5f0a95c0072150dc40321810a612b0a6ce
+index 0000000000000000000000000000000000000000..6127ffb94226153d13b99e6e6b25a4d5d1f7a02c
 --- /dev/null
 +++ b/research/dual/test-orchestration.ps1
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,121 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +# Synthetic temporary files/functions only; no GPU, firmware, USB or network IO.
 +$ErrorActionPreference='Stop'
@@ -3496,6 +3675,12 @@ index 0000000000000000000000000000000000000000..f5660f5f0a95c0072150dc40321810a6
 +    Check (@(Get-DualWholeCaptures $capture 2).Count -eq 1) 'One pair boot was counted twice.'
 +    [IO.File]::WriteAllText((Join-Path $capture 'DIAG01.TXT'),(Log 2))
 +    Check (@(Get-DualWholeCaptures $capture 2).Count -eq 2) 'Two complete pair logs did not count.'
++    foreach($marker in @('probe-capture-only=1',"probe-capture-only=1`r`nprobe-capture-only=1",'  PROBE-CAPTURE-ONLY = malformed')) {
++        $observation=(Log 2).Replace('dual-card-end index=0000',"$marker`r`ndual-card-end index=0000")
++        [IO.File]::WriteAllText((Join-Path $capture 'DIAG01.TXT'),$observation)
++        Check (@(Get-DualWholeCaptures $capture 2).Count -eq 1) 'Capture-only or malformed marker counted toward a write workflow.'
++    }
++    [IO.File]::WriteAllText((Join-Path $capture 'DIAG01.TXT'),(Log 2))
 +    $scratchEntry=Join-Path $root 'research/dual/new-machine.ps1'
 +    [void][IO.Directory]::CreateDirectory((Split-Path $scratchEntry))
 +    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'new-machine.ps1') -Destination $scratchEntry
@@ -3517,6 +3702,10 @@ index 0000000000000000000000000000000000000000..f5660f5f0a95c0072150dc40321810a6
 +        Check ($calls.Usb -eq 0 -and $calls.Probe -eq 0) 'Conflicting actions reached USB selection or staging.'
 +        Invoke-DualNewMachine Z $esp 'synthetic' 'never-execute' 'never-execute' 'never-execute' '' $false $true
 +        Check ($calls.Usb -eq 1 -and $calls.Probe -eq 1 -and !(Test-Path -LiteralPath (Join-Path $root 'research/dual/local'))) 'Probe-only with two complete files reached profile generation.'
++        $observation=(Log 2).Replace('dual-card-end index=0000',"probe-capture-only=1`r`ndual-card-end index=0000")
++        [IO.File]::WriteAllText((Join-Path $probeDir 'DIAG01.TXT'),$observation)
++        Invoke-DualNewMachine Z $esp 'synthetic' 'never-execute' 'never-execute' 'never-execute' '' $false $true
++        Check ($calls.Usb -eq 2 -and $calls.Probe -eq 2 -and !(Test-Path -LiteralPath (Join-Path $root 'research/dual/local'))) 'Capture-only marker blocked diagnostic staging.'
 +    }
 +    [IO.File]::WriteAllText((Join-Path $capture 'DIAG01.TXT'),(Log 2).Replace('capture-complete=1','capture-complete=0'))
 +    Check (@(Get-DualWholeCaptures $capture 2).Count -eq 1) 'Incomplete log counted toward pair evidence.'
@@ -4625,10 +4814,10 @@ index 0000000000000000000000000000000000000000..2109e24117fe856dc94c1ab59069d83d
 +    run(parser.parse_args().clang)
 diff --git a/research/dual/test_pair_profile.py b/research/dual/test_pair_profile.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8501f8c8b63e5e62d0aa98c69be6f7a3b5771983
+index 0000000000000000000000000000000000000000..dd773097aef89aa074e06599e135f4207e9b27ab
 --- /dev/null
 +++ b/research/dual/test_pair_profile.py
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,287 @@
 +"""Synthetic generator/serialization controls. Never physical/write evidence.
 +
 +The test-only driver digest and FWSEC locator below are deliberately invented.
@@ -4684,17 +4873,17 @@ index 0000000000000000000000000000000000000000..8501f8c8b63e5e62d0aa98c69be6f7a3
 +    result=copy.deepcopy(D.ENVELOPE)
 +    digest=hashlib.sha256(image()[0x280:0x1280]).hexdigest()
 +    for entry in result['nvgop']:
-+        if entry['version'] in ('60009','60010'):entry['text_sha256']=digest
++        if entry['version'] in ('60009','60010','6000a'):entry['text_sha256']=digest
 +    for chip in result['chips']:
 +        for entry in chip['nvgop']:
-+            if entry['version'] in ('60009','60010'):entry['text_sha256']=digest
++            if entry['version'] in ('60009','60010','6000a'):entry['text_sha256']=digest
 +        for rows in chip.get('pci_nvgop',{}).values():
 +            for entry in rows:
-+                if entry['version'] in ('60009','60010'):entry['text_sha256']=digest
++                if entry['version'] in ('60009','60010','6000a'):entry['text_sha256']=digest
 +    return result
 +
 +
-+def synthetic(count=2,*,boot=0,peer_bound=False,peer_foreign=False,peer_children=False,peer_child_foreign=False,primary_bus=1,added_models=False):
++def synthetic(count=2,*,boot=0,peer_bound=False,peer_foreign=False,peer_children=False,peer_child_foreign=False,primary_bus=1,added_models=False,maxsun_2216=False):
 +    cards=D.cards()[:count]
 +    cards[0].update(bus=primary_bus,subsystem=0x38811462,prom=bytes(0x100000))
 +    cards[0]['subsystem']=T.configuration(command=2)[11]
@@ -4702,8 +4891,10 @@ index 0000000000000000000000000000000000000000..8501f8c8b63e5e62d0aa98c69be6f7a3
 +        cards[0].update(board=0x220a10de,memory=0x3000)
 +        if count==2:
 +            cards[1].update(board=0x248210de,subsystem=0x50521462)
++    if maxsun_2216:
++        cards[0].update(board=0x221610de,memory=0x2800,subsystem=0x20007377)
 +    base=T.synthetic_capture(bus=primary_bus,children=1,command=2,
-+                             board=cards[0]['board'],memory=cards[0]['memory'])
++                             board=cards[0]['board'],memory=cards[0]['memory'],subsystem=cards[0]['subsystem'])
 +    start=base.index('probe-target ');binding=base.index('binding handle=')
 +    prefix=base[:start]
 +    graph=base[binding:]
@@ -4758,9 +4949,9 @@ index 0000000000000000000000000000000000000000..8501f8c8b63e5e62d0aa98c69be6f7a3
 +    return folder
 +
 +
-+def generate(folder):
++def generate(folder, candidate_envelope=None):
 +    with patch.object(M.LEGACY,'locate_fwsec',return_value={'image_off':0x1000,'image_size':0x400}):
-+        return M.generate(folder,Path('SYNTHETIC-NOT-A-LOCATOR'),envelope())
++        return M.generate(folder,Path('SYNTHETIC-NOT-A-LOCATOR'),candidate_envelope or envelope())
 +
 +
 +def emit(root,count=2,**kwargs):
@@ -4781,6 +4972,35 @@ index 0000000000000000000000000000000000000000..8501f8c8b63e5e62d0aa98c69be6f7a3
 +    def setUp(self):
 +        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
 +        self.root=Path(self.tmp.name)
++
++    def test_maxsun_2216_requires_exact_subsystem_prom_and_gop(self):
++        inputs=prepare(self.root/'maxsun',count=2,maxsun_2216=True)
++        with self.assertRaisesRegex(ValueError,'PROM hash is outside'):
++            generate(inputs)
++        allowed=envelope()
++        allowed['profile_prom_sha256']['221610de']=[hashlib.sha256(bytes(0x100000)).hexdigest()]
++        outputs,report=generate(inputs,allowed)
++        card=report['Cards'][0]
++        self.assertEqual((card['PciId'],card['Subsystem'],card['Chip'],card['MemoryMiB'],card['NvgopVersion']),
++                         ('221610de','20007377','b72000a1',0x2800,0x6000a))
++        self.assertIn(b'#define GU_BOARD_ID 0x221610deU',outputs['internal-boot/unlock/profile-local-dual.h'])
++        path=inputs/'DIAG01.TXT'
++        valid=path.read_text()
++        for old,new,message in [('20007377','403f1458','Subsystem'),
++                                ('20007377','389b1462','Subsystem'),
++                                ('221610de','220610de','Device ID'),
++                                ('version=0x6000a','version=0x60009','Unreviewed per-card NVIDIA driver code'),
++                                ('dual-card-begin index=0000','probe-capture-only=1\ndual-card-begin index=0000','Capture-only')]:
++            with self.subTest(value=new):
++                path.write_text(valid.replace(old,new))
++                with self.assertRaisesRegex(ValueError,message):
++                    generate(inputs,allowed)
++        path.write_text(valid)
++        original=bytearray((inputs/'IMG00.BIN').read_bytes())
++        original[0x280]^=1
++        (inputs/'IMG00.BIN').write_bytes(original)
++        with self.assertRaisesRegex(ValueError,'Unreviewed per-card NVIDIA driver code'):
++            generate(inputs,allowed)
 +
 +    def test_added_pair_pins_both_cards_to_reviewed_identities(self):
 +        _,report,fixture=emit(self.root/'expanded',added_models=True,peer_bound=True,peer_children=True)
@@ -5250,10 +5470,10 @@ index 6c7ceec35fccc2d3b4b09bda73702e919eed9d17..0cf831c4893c0733e78eb8ee93360cb4
  $boot=Join-Path $repo 'internal-boot/boot'
  . (Join-Path $PSScriptRoot 'probe-manifest.ps1')
 diff --git a/research/profile/check-compatibility.py b/research/profile/check-compatibility.py
-index bbc7f8ca879614363c99076cb8f15e3821671b8f..514b1891ef994f846bb3f06aded78552405cf8a7 100644
+index bbc7f8ca879614363c99076cb8f15e3821671b8f..352ebc4990d5439183eab93069e194dc68f01276 100644
 --- a/research/profile/check-compatibility.py
 +++ b/research/profile/check-compatibility.py
-@@ -119,6 +119,12 @@ def validate_envelope(envelope):
+@@ -119,6 +119,18 @@ def validate_envelope(envelope):
          ids = envelope['probe_device_ids']
          require(isinstance(ids, list) and ids and all(hex_value(v, r'[0-9a-f]{8}') for v in ids))
          require(len(set(ids)) == len(ids))
@@ -5263,11 +5483,17 @@ index bbc7f8ca879614363c99076cb8f15e3821671b8f..514b1891ef994f846bb3f06aded78552
 +            require(card in ids and isinstance(values, list) and values)
 +            require(all(hex_value(v, r'[0-9a-f]{8}') and v not in ('00000000', 'ffffffff') for v in values))
 +            require(len(set(values)) == len(values))
++        prom_pins = envelope.get('profile_prom_sha256', {})
++        require(isinstance(prom_pins, dict))
++        for card, values in prom_pins.items():
++            require(card in ids and isinstance(values, list) and values)
++            require(all(hex_value(v, r'[0-9a-f]{64}') for v in values))
++            require(len(set(values)) == len(values))
          chips = envelope['chips']
          require(isinstance(chips, list) and chips)
          admitted_ids = set()
 diff --git a/research/profile/make-profile.py b/research/profile/make-profile.py
-index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d1aa087d5 100644
+index d2035a7ba1494a24c8d920f08983287daf54c98b..6c4c9aa3c1c530d668bf9b8de31b89debe11d01c 100644
 --- a/research/profile/make-profile.py
 +++ b/research/profile/make-profile.py
 @@ -206,7 +206,7 @@ def gpu_display_path(path):
@@ -5297,7 +5523,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
              fail('aggregate NVIDIA or combo driver owns an unrelated handle')
      expected_files = {'nvgop': ('name', NVGOP_NAME), 'combo': ('guid', COMBO_FILE),
                        'edid': ('guid', MOUSE_FILE), 'gfx': ('guid', GFX_FILE), 'out': ('guid', OUT_FILE)}
-@@ -422,17 +422,39 @@ def probe_mmio(text):
+@@ -422,17 +422,41 @@ def probe_mmio(text):
      return values, statuses
  
  
@@ -5306,6 +5532,8 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      """Everything one capture yields. image_dir=None skips the driver code hashes."""
      raw = diag.read_bytes()
      text = raw.decode('utf-8-sig').replace('\r\n', '\n')
++    if any(line.startswith('probe-capture-only') for line in text.splitlines()):
++        fail(f'{diag.name}: capture-only observations are outside the reviewed deep-probe profile envelope')
 +    if peer_context is None and any(line.startswith('dual-probe-') for line in text.splitlines()):
 +        fail(f'{diag.name}: experimental dual captures cannot authorize a single-card LOCAL profile')
 +    probe_text = text
@@ -5340,7 +5568,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if not target:
          fail(f'{diag.name}: no probe-target record')
      segment, target_bus, device, function = (int(x, 16) for x in target.groups())
-@@ -444,7 +466,7 @@ def analyze(diag, image_dir, envelope):
+@@ -444,7 +468,7 @@ def analyze(diag, image_dir, envelope):
          fail(f'{diag.name}: the RTX must be at device 0, function 0 (checks.c GuCheckConfig)')
      if not 1 <= target_bus <= 0xff:
          fail(f'{diag.name}: bus {target_bus:#x} is not a discrete slot; the RTX must be on a nonzero bus')
@@ -5349,7 +5577,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      words = rows[0].split() if len(rows) == 1 else []
      if len(words) != 64:
          fail(f'{diag.name}: expected one 64-dword probe config snapshot')
-@@ -452,6 +474,9 @@ def analyze(diag, image_dir, envelope):
+@@ -452,6 +476,9 @@ def analyze(diag, image_dir, envelope):
      board, subsystem = cfg[0], cfg[11]
      if f'{board:08x}' not in envelope.get('probe_device_ids', []):
          fail('device ID is outside the reviewed deep-probe envelope')
@@ -5359,7 +5587,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if cfg[2] != int(envelope['class_revision'], 16):
          fail(f'class/revision {cfg[2]:08x} is not the proven {envelope["class_revision"]}')
      if not cfg[1] & 2 or cfg[1] & 4:
-@@ -461,7 +486,7 @@ def analyze(diag, image_dir, envelope):
+@@ -461,7 +488,7 @@ def analyze(diag, image_dir, envelope):
          fail(f'BAR0 {bar0:#x} is not a 16 MiB aligned 32-bit non-prefetchable window')
      # full-release.c CapturePermit: the PciIo attribute cache must equal the raw IO/MEM command
      # bits, with no bus mastering, or the release stops after the console was already detached.
@@ -5368,7 +5596,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if not rows:
          fail(f'{diag.name}: no PciIo attribute record; capture again with the current probe')
      if len(rows) != 1:
-@@ -477,7 +502,7 @@ def analyze(diag, image_dir, envelope):
+@@ -477,7 +504,7 @@ def analyze(diag, image_dir, envelope):
          fail(f'{diag.name}: PciIo attributes {attributes:#x} disagree with the PCI command register '
               f'(expected IO/MEM/BME bits {expected_attributes:#x}); full-release.c CapturePermit would stop the release')
  
@@ -5377,7 +5605,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if any(o not in mmio for o in COLD):
          fail(f'{diag.name}: missing a cold-state register read')
      chip, plm, g1, g2, g3, wpr2, ss0, ss1, memory = (mmio[o] for o in COLD)
-@@ -495,7 +520,7 @@ def analyze(diag, image_dir, envelope):
+@@ -495,17 +522,41 @@ def analyze(diag, image_dir, envelope):
      if (g1, g2, g3, wpr2, plm) != (0x8b8f, 0x3ff, 0x10, 0, 0xffffff8f) or ss1 > 15 or \
              ss0 in (0xffffffff, 0x88888888) or ss0 & 0xffff0000 == 0xbadf0000:
          fail(f'{diag.name}: GPU was not in its power-on state; capture after a full shutdown')
@@ -5385,8 +5613,11 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
 +    prom = re.search(r'^prom sha256=([0-9a-f]{64})$', probe_text, re.M)
      if not prom:
          fail(f'{diag.name}: no PROM hash')
++    prom_pins = envelope.get('profile_prom_sha256', {})
++    if f'{board:08x}' in prom_pins and prom[1] not in prom_pins[f'{board:08x}']:
++        fail('PROM hash is outside the reviewed deep-probe profile envelope')
  
-@@ -503,9 +528,30 @@ def analyze(diag, image_dir, envelope):
+     lines = text.split('\n')
      bindings = parse_bindings(lines)
      blocks = parse_handles(text)
      nvidia = [h for h, b in blocks.items() if (c := pci_config(b['raw'])) and c[0] & 0xffff == 0x10de and c[2] >> 24 == 3]
@@ -5420,7 +5651,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if pci_config(blocks[rtx_pci]['raw'])[11] != subsystem:
          fail('graph and probe disagree on the RTX subsystem')
      locations = re.findall(r'^pci location-status=.*$', blocks[rtx_pci]['raw'], re.M)
-@@ -518,7 +564,8 @@ def analyze(diag, image_dir, envelope):
+@@ -518,7 +569,8 @@ def analyze(diag, image_dir, envelope):
      if len(other) > 1:
          fail(f'expected at most one non-NVIDIA display controller (integrated GPU), found {len(other)}')
      igpu = pci_config(blocks[other[0]]['raw'])[0] if other else None
@@ -5430,7 +5661,7 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      if igpu is None:
          # The RTX must remain the only physical GOP. One additional candidate is
          # allowed only when its complete aggregate ownership graph is recognized.
-@@ -544,7 +591,8 @@ def analyze(diag, image_dir, envelope):
+@@ -544,7 +596,8 @@ def analyze(diag, image_dir, envelope):
      fb = re.search(r'^gop framebuffer=0x([0-9a-f]+) ', blocks[rtx]['raw'], re.M)
      if not fb:
          fail('RTX GOP has no framebuffer record')
@@ -5441,20 +5672,53 @@ index d2035a7ba1494a24c8d920f08983287daf54c98b..95cb6a08f9ea1bffc417b48e8979351d
      # Aggregate uses the same table/interfaces/ownership contract as the runtime;
      # NVRAM ConOut is not used by prepare/release and is not guessed here.
 diff --git a/research/profile/proven.json b/research/profile/proven.json
-index 6d531bdf785b61c03da79b2b8faf712777bab733..31e03e3b97354a989326cc49bb553d099673ae15 100644
+index 6d531bdf785b61c03da79b2b8faf712777bab733..fd70ea0672d2250af9afbafffec976c57b746c26 100644
 --- a/research/profile/proven.json
 +++ b/research/profile/proven.json
-@@ -1,7 +1,8 @@
+@@ -1,7 +1,9 @@
  {
    "_comment": "Hardware-proven envelope for generated local profiles. make-profile.py refuses any capture outside it. Widen an entry only in a reviewed change that cites new hardware evidence (docs/NEW-MACHINE.en.md).",
    "class_revision": "030000a1",
 -  "probe_device_ids": ["220410de", "220310de", "248710de", "250410de", "248410de", "24c910de", "220a10de"],
-+  "probe_device_ids": ["220410de", "220310de", "248710de", "250410de", "248410de", "24c910de", "220a10de", "248210de"],
-+  "probe_subsystems": {"248210de": ["50521462"]},
++  "probe_device_ids": ["220410de", "220310de", "248710de", "250410de", "248410de", "24c910de", "220a10de", "248210de", "221610de"],
++  "probe_subsystems": {"248210de": ["50521462"], "221610de": ["20007377"]},
++  "profile_prom_sha256": {"221610de": ["88a6bce1bd790d3e4c542cccafbbd88a7ef73e2e0bef34310d7e8ed780e56d25"]},
    "chips": [
      {
        "chip": "b72000a1",
-@@ -32,7 +33,7 @@
+@@ -9,30 +11,34 @@
+       "memory": [
+         "6000",
+         "5ff4",
+-        "3000"
++        "3000",
++        "2800"
+       ],
+-      "pci_memory": {"220410de": ["6000", "5ff4"], "220310de": ["6000", "5ff4"], "220a10de": ["3000"]},
++      "pci_memory": {"220410de": ["6000", "5ff4"], "220310de": ["6000", "5ff4"], "220a10de": ["3000"], "221610de": ["2800"]},
+       "nvgop": [
+         {"version": "60008", "text_sha256": "6aad26e6909c9791dd0caba92d6658e9dfd8009aee80676002bf24ce2ad24d08"},
+         {"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"},
+-        {"version": "60009", "text_sha256": "d045cee2113e461c7c678ec21542b1d0f18356765c0fc6a0bf2dcf824088e011"}
++        {"version": "60009", "text_sha256": "d045cee2113e461c7c678ec21542b1d0f18356765c0fc6a0bf2dcf824088e011"},
++        {"version": "6000a", "text_sha256": "8924ba488419e5d82b524d10e8dd63bfe886f077026fae1a9cc03e25b920b276"}
+       ],
+       "pci_nvgop": {
+         "220410de": [{"version": "60008", "text_sha256": "6aad26e6909c9791dd0caba92d6658e9dfd8009aee80676002bf24ce2ad24d08"}, {"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"}, {"version": "60009", "text_sha256": "d045cee2113e461c7c678ec21542b1d0f18356765c0fc6a0bf2dcf824088e011"}],
+         "220310de": [{"version": "60008", "text_sha256": "6aad26e6909c9791dd0caba92d6658e9dfd8009aee80676002bf24ce2ad24d08"}, {"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"}, {"version": "60009", "text_sha256": "d045cee2113e461c7c678ec21542b1d0f18356765c0fc6a0bf2dcf824088e011"}],
+-        "220a10de": [{"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"}]
++        "220a10de": [{"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"}],
++        "221610de": [{"version": "6000a", "text_sha256": "8924ba488419e5d82b524d10e8dd63bfe886f077026fae1a9cc03e25b920b276"}]
+       },
+       "evidence": [
+         "evidence/headless-handoff",
+         "evidence/x870-3090ti-usb",
+-        "https://github.com/impacifist/Windows-GPU-UNLOCK/issues/73"
++        "https://github.com/impacifist/Windows-GPU-UNLOCK/issues/73",
++        "https://github.com/windows-GPU-UNLOCK/Windows-GPU-UNLOCK/pull/72"
+       ]
+     },
+     {
        "chip": "b74000a1",
        "family": "GA104",
        "memory": ["3000", "2000"],
@@ -5463,7 +5727,7 @@ index 6d531bdf785b61c03da79b2b8faf712777bab733..31e03e3b97354a989326cc49bb553d09
        "nvgop": [
          {"version": "60015", "text_sha256": "645a2f416940211e09023838ac03f4b45453f95f457eab2de49628d57e9deb95"},
          {"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"},
-@@ -41,9 +42,10 @@
+@@ -41,9 +47,10 @@
        "pci_nvgop": {
          "24c910de": [{"version": "60015", "text_sha256": "645a2f416940211e09023838ac03f4b45453f95f457eab2de49628d57e9deb95"}],
          "248710de": [{"version": "60010", "text_sha256": "615b37a708b1894e18d7fa60cfcdacaa4d8b598863a10b8103d231a595847b2b"}],
@@ -5476,6 +5740,18 @@ index 6d531bdf785b61c03da79b2b8faf712777bab733..31e03e3b97354a989326cc49bb553d09
      },
      {
        "chip": "b76000a1",
+@@ -55,6 +62,11 @@
+     }
+   ],
+   "nvgop": [
++    {
++      "version": "6000a",
++      "text_sha256": "8924ba488419e5d82b524d10e8dd63bfe886f077026fae1a9cc03e25b920b276",
++      "evidence": "https://github.com/tqk114514/Windows-GPU-UNLOCK/blob/2f32326/internal-boot/unlock/firmware-profile.h#L96-L100"
++    },
+     {
+       "version": "60015",
+       "text_sha256": "645a2f416940211e09023838ac03f4b45453f95f457eab2de49628d57e9deb95",
 diff --git a/research/profile/test_compatibility.py b/research/profile/test_compatibility.py
 index d4597c2309afbc11888aa15c6d9ee5c2198f671a..e304ad9675a49ffc4c10d3b07bb0d731d1f78dd1 100644
 --- a/research/profile/test_compatibility.py
@@ -5529,7 +5805,7 @@ index d4597c2309afbc11888aa15c6d9ee5c2198f671a..e304ad9675a49ffc4c10d3b07bb0d731
          self.assertEqual(self.result()['status'],'error')
          with self.assertRaisesRegex(checker.mp.Refused,'requires PCI-specific'):
 diff --git a/research/profile/test_local_topology.py b/research/profile/test_local_topology.py
-index e819e200ff42fef535c6aef691d9947c1ffdb3d0..63a18360563713f03b2d2333eea090eab0b232cc 100644
+index e819e200ff42fef535c6aef691d9947c1ffdb3d0..c9917f969e8946c98f81d15bdc1aa18d11646049 100644
 --- a/research/profile/test_local_topology.py
 +++ b/research/profile/test_local_topology.py
 @@ -34,8 +34,9 @@ def configuration(command=3, board=0x220410de):
@@ -5543,12 +5819,14 @@ index e819e200ff42fef535c6aef691d9947c1ffdb3d0..63a18360563713f03b2d2333eea090ea
      handles = {i: {} for i in (1, 2, 3, 4, 5, 6, 8, 10, 11)}
      siblings=[7]+list(range(20,20+max(0,children-2))) if children>1 else []
      for child in siblings:
-@@ -100,7 +101,7 @@ def synthetic_capture(*, bus=0x2b, igpu=False, no_edid=True, children=2, command
+@@ -100,8 +101,9 @@ def synthetic_capture(*, bus=0x2b, igpu=False, no_edid=True, children=2, command
          lines.append('pci-bar0-resource raw='+resource.hex())
      cold = [chip, 0xffffff8f, 0x8b8f, 0x3ff, 0x10, 0, 0x03000062, 6, memory]
      lines += [f'mmio off=0x{at:08x} status=0x0000000000000000 value=0x{value:08x}' for at, value in zip(mp.COLD, cold)]
 -    nv_size,nv_stop,nv_version=(0x26ae0,0x678,0x60010) if board in (0x220310de,0x248710de,0x250410de,0x220a10de) else (0x2be40,0x698,0x60009)
 +    nv_size,nv_stop,nv_version=(0x26ae0,0x678,0x60010) if board in (0x220310de,0x248210de,0x248710de,0x250410de,0x220a10de) else (0x2be40,0x698,0x60009)
      if board==0x24c910de:nv_size,nv_stop,nv_version=0x26e00,0x678,0x60015
++    if board==0x221610de:nv_size,nv_stop,nv_version=0x2be40,0x698,0x6000a
      out_size,out_stop,gfx_size,gfx_stop=(0x6a40,0x104c,0x3bc0,0xb2c) if aggregate else (0x60c0,0x1290,0x39e0,0xa3c)
      bindings = [(4, 10, 0x400000, out_size, out_stop, 0x10, 3, mp.OUT_FILE),
+                 (5, 11, 0x500000, gfx_size, gfx_stop, 0x10, 3, mp.GFX_FILE),

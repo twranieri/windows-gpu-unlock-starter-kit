@@ -1,8 +1,8 @@
 # Experimental one/two-GPU flow
 
-Version 0.2.1 implements the guarded capture, local profile, actual-input host tests, build and explicit staging path for **one or two** candidate NVIDIA cards. Physical two-card boot, recovery and performance remain unverified. Use the [step-by-step guide](../../docs/QUICKSTART.md).
+Version 0.2.2 implements the guarded capture, local profile, actual-input host tests, build and explicit staging path for **one or two** candidate NVIDIA cards. Physical two-card boot, recovery and performance remain unverified. Use the [step-by-step guide](../../docs/QUICKSTART.md).
 
-The preliminary IDs are vendor `10DE` with device `2204`, `2203`, `2487`, `2504`, `2484`, `24C9`, `220A` or `2482` with MSI subsystem `1462:5052`. Matching IDs still need exact chip, VRAM, firmware code, resources and ownership checks. The kit can stage a read-only inventory probe for the other RTX 30-series IDs in the NVIDIA catalog. [Compatibility](../../docs/COMPATIBILITY.md)
+The preliminary IDs and subsystem restrictions are in the compatibility table. Matching IDs still need exact chip, VRAM, firmware code, resources and ownership checks. A read-only research capture can record the original RTX 3080 10GB `2206` and two additional `2216` subsystems. The capture-only marker excludes those logs from unlock evidence. [Compatibility](../../docs/COMPATIBILITY.md)
 
 From the kit root:
 

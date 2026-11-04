@@ -1,5 +1,11 @@
 # Changes
 
+## 0.2.2 — 2026-11-04 (test build)
+
+- Add the exact Maxsun RTX 3080 10GB LHR candidate and bounded read-only evidence for the RTX 3080 `2206` and two other LHR subsystems.
+- Show driver-reported VRAM by PCI address and keep the cold-probe measurement as the profile input.
+- Exercise the reservation calculation at 4, 6, 8, 10, 12, 16 and 24 GiB in RAM.
+
 ## 0.2.1 — 2026-11-04 (test build)
 
 - Add RTX 3080 12GB `220A` and the MSI RTX 3070 Ti `2482` / subsystem `1462:5052` as candidates for the guarded profile workflow.
