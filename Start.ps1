@@ -12,7 +12,7 @@ param(
 $script:UGPin='75071aa134616c3d65ad315e0cf2810bf34b191b'
 $script:UGKitRoot=$PSScriptRoot
 $script:UGDualSourceRoot=Join-Path $PSScriptRoot 'experimental/dual-gpu'
-$script:UGKnownIds=@('220410de','220310de','248710de','250410de','248410de','24c910de')
+$script:UGKnownIds=@('220410de','220310de','248710de','250410de','248410de','24c910de','220a10de','248210de')
 
 function New-UGCheck($Name,$Status,$Detail,$RequiredFor=@('Probe','Build','StageUnlock')) {
     [pscustomobject]@{Name=$Name;Status=$Status;Detail=$Detail;RequiredFor=@($RequiredFor)}
@@ -44,6 +44,7 @@ function Get-UGRepositoryCheck([string]$Path) {
                 $check=New-UGCheck 'Source' 'PASS' ('Reviewed one/two-card source receipt, base '+$manifest.SourceCommit+' and patched file hashes verified.')
                 $check | Add-Member NoteProperty Workflow 'pair'
                 $check | Add-Member NoteProperty SupportsPairWrite ($manifest.CanBuildGenericDualUnlock -is [bool] -and $manifest.CanBuildGenericDualUnlock)
+                $check | Add-Member NoteProperty SupportsProbeOnly ($manifest.SupportsProbeOnly -is [bool] -and $manifest.SupportsProbeOnly)
                 $check | Add-Member NoteProperty Revision $manifest.SourceCommit
                 return $check
             } $Path $script:UGDualSourceRoot
@@ -71,8 +72,8 @@ function Get-UGCandidateIds([string]$RepoPath) {
     $envelope=Get-Content -LiteralPath (Join-Path $RepoPath 'research/profile/proven.json') -Raw -ErrorAction Stop | ConvertFrom-Json
     return @(ConvertFrom-UGCandidateEnvelope $envelope)
 }
-function Get-UGGpuAssessment($Inventory,$AcceptedIds) {
-    $name='GPU preliminary identity';$targets=@();$uncertain=$false
+function Get-UGGpuAssessment($Inventory,$AcceptedIds,[switch]$AllowObservation) {
+    $name='GPU preliminary identity';$targets=@();$unqualified=@();$uncertain=$false
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $rows=@($Inventory | Where-Object {$null -ne $_})
     if(!$rows.Count){return New-UGCheck $name 'UNKNOWN' 'Windows returned no display-controller inventory; no NVIDIA target can be established.'}
@@ -81,17 +82,36 @@ function Get-UGGpuAssessment($Inventory,$AcceptedIds) {
         $match=[regex]::Match($pnp,'(?i)^PCI\\VEN_([0-9a-f]{4})&DEV_([0-9a-f]{4})(?=&|\\|$)')
         if($match.Success -and $match.Groups[1].Value -ieq '10de'){
             if(!$seen.Add($pnp)){$uncertain=$true;continue}
-            $targets+=$match.Groups[2].Value.ToLowerInvariant();continue
+            $device=$match.Groups[2].Value.ToLowerInvariant()
+            $targets+=$device
+            $identity=$device+'10de'
+            # The named MSI 3070 Ti evidence covers only this subsystem.
+            if($AcceptedIds -notcontains $identity -or $script:UGKnownIds -notcontains $identity -or
+               ($device -eq '2482' -and $pnp -notmatch '(?i)&SUBSYS_50521462(?=&|\\|$)')){$unqualified+=$device}
+            continue
         }
         if([string]$row.Name -match '(?i)NVIDIA' -or $pnp -match '(?i)^PCI\\VEN_10DE'){$uncertain=$true}
     }
     if($uncertain){return New-UGCheck $name 'UNKNOWN' 'A possible NVIDIA controller has an incomplete or inconsistent PCI identity; Probe is blocked.'}
     if($targets.Count -gt 2){return New-UGCheck $name 'BLOCKED' 'More than two NVIDIA display controllers were found; this workflow accepts at most two.'}
     if(!$targets.Count){return New-UGCheck $name 'BLOCKED' 'No NVIDIA PCI display controller was identified for the pinned automatic LOCAL route.'}
-    foreach($device in $targets){
-        if($AcceptedIds -notcontains ($device+'10de') -or $script:UGKnownIds -notcontains ($device+'10de')){
-            return New-UGCheck $name 'BLOCKED' "PCI 10de:$device is outside the reviewed candidate list. Every installed NVIDIA controller must qualify; no card is silently skipped."
+    if($unqualified.Count) {
+        $models=@()
+        if($AllowObservation) {
+            $catalog=Get-Content -LiteralPath (Join-Path $script:UGKitRoot 'rtx30-pci.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            if($catalog.schema_version -ne 1 -or $catalog.vendor_id -cne '10de'){throw 'Invalid RTX 30-series inventory catalog.'}
         }
+        foreach($device in $unqualified) {
+            $entry=if($AllowObservation){$catalog.devices.$device}
+            if(!$entry -or $entry.group -cnotin @('desktop','mobile','ada')) {
+                return New-UGCheck $name 'BLOCKED' "PCI 10de:$device is outside the reviewed candidate list and this route cannot collect an inventory for it."
+            }
+            $architecture=if($entry.group -ceq 'ada'){' (Ada)'}else{''}
+            $models+=('PCI 10de:{0} {1}{2}' -f $device,$entry.label,$architecture)
+        }
+        $check=New-UGCheck $name 'OBSERVE' (($models -join ', ')+'. Probe can collect a read-only UEFI inventory. Build and StageUnlock require an admitted configuration for every NVIDIA card.') @('Build','StageUnlock')
+        $check | Add-Member NoteProperty TargetCount $targets.Count
+        return $check
     }
     $identities=($targets | ForEach-Object {'10de:'+$_}) -join ', '
     $check=New-UGCheck $name 'CANDIDATE' "$($targets.Count) card(s), PCI $identities match the preliminary ID list only. Chip/VRAM, firmware, topology and two whole-set cold captures still decide compatibility."
@@ -104,11 +124,11 @@ function Get-UGDefaultRepository {
     if(Test-Path -LiteralPath $paired -PathType Container){return $paired}
     return Join-Path $script:UGKitRoot 'Windows-GPU-UNLOCK'
 }
-function Get-UGGpuCheck([string]$RepoPath) {
+function Get-UGGpuCheck([string]$RepoPath,[switch]$AllowObservation) {
     try {
         $ids=@(Get-UGCandidateIds $RepoPath)
         $inventory=@(Get-CimInstance -ClassName Win32_VideoController -Property Name,PNPDeviceID -ErrorAction Stop)
-        return Get-UGGpuAssessment $inventory $ids
+        return Get-UGGpuAssessment $inventory $ids -AllowObservation:$AllowObservation
     } catch {return New-UGCheck 'GPU preliminary identity' 'UNKNOWN' 'Could not read the pinned candidate list or Windows PCI display inventory. No GPU compatibility approval is inferred.'}
 }
 function Find-UGExe([string]$Given,[string]$Name,[string]$Fallback) {
@@ -152,6 +172,38 @@ function Get-UGAssetCheck([string]$RepoPath,[string]$AssetPath) {
         return New-UGCheck 'Firmware assets' 'PASS' 'All five local assets match pinned sizes and SHA-256 hashes.' @('Build','StageUnlock')
     } catch {return New-UGCheck 'Firmware assets' 'BLOCKED' 'Five verified local firmware assets are needed for Build/StageUnlock; see upstream docs/ASSETS.en.md.' @('Build','StageUnlock')}
 }
+function Get-UGEnvelopeNotes([string]$Text) {
+    $handles=[regex]::Split($Text,'(?m)^handle id=0x([0-9a-f]{16})\r?\n')
+    $legacyVideo=@{};$displayOwners=@();$notes=@()
+    for($index=1;$index -lt $handles.Length;$index+=2) {
+        $id=$handles[$index];$body=$handles[$index+1]
+        # EFI firmware volume file path for the BIOS video thunk (BiosVideo.inf).
+        if($body -cmatch '(?m)^image-file-path-node raw=04061400f855cf2975b65d4f8f2fb87a3ecfd063\r?$' -and
+           $body -cmatch "(?m)^driver image=0x$id binding=0x$id version="){$legacyVideo[$id]=$true}
+
+        $pci=[regex]::Match($body,'(?ms)^protocol guid=4cf5b200-68b8-4ca5-9eec-b23e3f50029a\r?\n(.*?)(?=^protocol guid=|\z)')
+        if(!$pci.Success){continue}
+        $config=[regex]::Match($pci.Groups[1].Value,'(?m)^pci config-status=0x0000000000000000\r?\npci config-dwords=([0-9a-f]{4}10de) [0-9a-f]{4}([0-9a-f]{4}) 03[0-9a-f]{6}(?: |\r?$)')
+        if(!$config.Success -or $script:UGKnownIds -cnotcontains $config.Groups[1].Value){continue}
+        $device=$config.Groups[1].Value.Substring(0,4).ToUpperInvariant()
+        $command=[Convert]::ToInt32($config.Groups[2].Value,16)
+        $state=@()
+        if($command -band 4){$state+='bus mastering enabled'}
+        if(!($command -band 2)){$state+='memory decoding disabled'}
+        if($state.Count){$notes+=('UEFI observed PCI 10DE:{0} command 0x{1:x4} ({2}). The probe requires memory decoding on and bus mastering off.' -f $device,$command,($state -join ', '))}
+
+        if($pci.Groups[1].Value -cnotmatch '(?m)^opens status=0x0000000000000000 count=0x[0-9a-f]{16}\r?$'){continue}
+        $owners=[regex]::Matches($pci.Groups[1].Value,'(?m)^open agent=0x([0-9a-f]{16}) controller=0x[0-9a-f]{16} attributes=0x00000000000000[13]0 count=0x0000000000000001\r?$')
+        if($owners.Count -eq 1){$displayOwners+=$owners[0].Groups[1].Value}
+    }
+    foreach($owner in $displayOwners) {
+        if($legacyVideo.ContainsKey($owner)) {
+            'Legacy BIOS video owns an NVIDIA GPU. Confirm BIOS Mode is UEFI in msinfo32, then disable Launch CSM in firmware and take a fresh cold capture.'
+            break
+        }
+    }
+    $notes | Select-Object -Unique -First 2
+}
 function ConvertFrom-UGDiagnostic([string]$Text,[string]$FileName,[int]$ExpectedTargets=0,[switch]$PairMode) {
     if($FileName -notmatch '^DIAG\d\d\.TXT$'){throw 'Not a diagnostic capture filename.'}
     $reasons=@([regex]::Matches($Text,'(?m)^\s*incomplete reason=([a-zA-Z0-9_-]{1,80}) status=0x([0-9a-fA-F]{1,16})\r?$') |
@@ -187,6 +239,9 @@ function ConvertFrom-UGDiagnostic([string]$Text,[string]$FileName,[int]$Expected
         $complete=$false;$reasons=@('Experimental whole-set capture requires the reviewed one/two-card source route.')
     }
     if(!$complete -and !$reasons.Count){$reasons=@('Incomplete or unrecognized probe capture; review this file locally.')}
+    if(!$complete -and ($reasons -match '^(?:dual|probe)-unreviewed-envelope ')) {
+        $reasons+=@(Get-UGEnvelopeNotes $Text)
+    }
     [pscustomobject]@{File=$FileName;Complete=$complete;Reasons=$reasons;PairMode=[bool]$PairMode;TargetCount=$ExpectedTargets}
 }
 function Get-UGCaptureEvidence([string]$UsbLetter,[int]$ExpectedTargets=0,[switch]$PairMode) {
@@ -210,7 +265,7 @@ function Get-UGCaptureCheck($Evidence) {
     }
     if($failed.Count){
         $summary=@($failed | Select-Object -First 3 | ForEach-Object {$_.File+': '+($_.Reasons -join '; ')}) -join ' | '
-        $explanation=if($summary -match 'probe-unreviewed-envelope'){'The diagnostic refused the captured PCI identity or PCI resource/state conditions. '}else{'The diagnostic did not complete. '}
+        $explanation=if($summary -match '(?:dual|probe)-unreviewed-envelope'){'The diagnostic refused the captured PCI identity or PCI resource/state conditions. '}else{'The diagnostic did not complete. '}
         return New-UGCheck 'Existing probe evidence' 'BLOCKED' ($explanation+$summary+' Build/StageUnlock remain blocked. Review the cause before an explicit Probe retry; unchanged reboots are not a fix. Preserve failed evidence locally.') @('Build','StageUnlock')
     }
     return New-UGCheck 'Existing probe evidence' 'INFO' 'No refused captures were found. Two separate complete cold captures are still required.' @()
@@ -221,13 +276,15 @@ function Get-UGCaptureCount([string]$UsbLetter) {
 function Get-UGReadiness($Options) {
     $checks=New-Object 'System.Collections.Generic.List[object]'
     $selectedRepo=if($Options.Repo){$Options.Repo}else{Get-UGDefaultRepository}
-    $config=[ordered]@{Repo=[IO.Path]::GetFullPath($selectedRepo);Drive=$null;WindowsEspGuid=$null;Assets=$Options.Assets;Python=$null;Clang=$null;LldLink=$null;VcVars=$null;Workflow='legacy';TargetCount=0;PairWriteReady=$false;SourceRevision=$script:UGPin}
+    $config=[ordered]@{Repo=[IO.Path]::GetFullPath($selectedRepo);Drive=$null;WindowsEspGuid=$null;Assets=$Options.Assets;Python=$null;Clang=$null;LldLink=$null;VcVars=$null;Workflow='legacy';TargetCount=0;PairWriteReady=$false;SupportsProbeOnly=$false;InventoryOnly=$false;SourceRevision=$script:UGPin}
     if (!$config.Assets){$config.Assets=Join-Path $config.Repo 'assets'}
     $source=Get-UGRepositoryCheck $config.Repo;$checks.Add($source)
     if($source.Workflow){$config.Workflow=$source.Workflow}
     if($source.SupportsPairWrite){$config.PairWriteReady=$true}
     if($source.Revision){$config.SourceRevision=$source.Revision}
-    $gpu=Get-UGGpuCheck $config.Repo;$checks.Add($gpu)
+    $config.SupportsProbeOnly=$source.Status -eq 'PASS' -and $source.Workflow -eq 'pair' -and $source.SupportsProbeOnly -eq $true
+    $gpu=Get-UGGpuCheck $config.Repo -AllowObservation:$config.SupportsProbeOnly;$checks.Add($gpu)
+    $config.InventoryOnly=$gpu.Status -eq 'OBSERVE'
     if($gpu.TargetCount){$config.TargetCount=[int]$gpu.TargetCount}
     if($config.TargetCount -eq 2 -and $config.Workflow -ne 'pair') {
         $checks.Add((New-UGCheck 'One/two-card source route' 'BLOCKED' 'Two cards require the reviewed patched pipeline. Run .\Get-Source.ps1 -DualGpu -Execute, finish dependencies, then rerun Start.ps1; its patched checkout is selected automatically.'))
@@ -291,7 +348,7 @@ function Get-UGDecision($Readiness,[string]$SelectedAction,[bool]$DoExecute) {
     if($SelectedAction -ne 'Check' -and @($Readiness.Checks | Where-Object Name -eq 'GPU preliminary identity').Count -ne 1){$errors+='GPU preliminary identity was not established; Probe/Build/StageUnlock cannot proceed.'}
     if($SelectedAction -ne 'Check' -and $Readiness.Config.TargetCount -eq 2 -and $Readiness.Config.Workflow -ne 'pair'){$errors+='Two-card execution requires the verified one/two-card source route; legacy dispatch is refused.'}
     if($SelectedAction -in @('Build','StageUnlock') -and $Readiness.Config.Workflow -eq 'pair' -and !$Readiness.Config.PairWriteReady){$errors+='The reviewed source package does not include the complete one/two-card build/stage pipeline.'}
-    if($SelectedAction -eq 'Probe' -and $Readiness.CaptureCount -ge 2){$errors+='Two complete capture files exist; choose Build so the upstream checker can assess them.'}
+    if($SelectedAction -eq 'Probe' -and !$Readiness.Config.InventoryOnly -and $Readiness.CaptureCount -ge 2){$errors+='Two complete capture files exist. Choose Build so the upstream checker can assess them.'}
     if($SelectedAction -in @('Build','StageUnlock') -and $Readiness.CaptureCount -lt 2){$errors+='Need at least two complete probe captures from separate full shutdowns. Run Probe first.'}
     [pscustomobject]@{Action=$SelectedAction;Blockers=$errors;WillExecute=($SelectedAction -ne 'Check' -and $DoExecute -and $errors.Count -eq 0);PlanOnly=(!$DoExecute -and $SelectedAction -ne 'Check')}
 }
@@ -300,6 +357,7 @@ function New-UGPipelineParameters($Config,[string]$SelectedAction) {
     $options=@{Drive=$Config.Drive;WindowsEspGuid=[guid]$Config.WindowsEspGuid;Assets=$Config.Assets;Python=$Config.Python;Clang=$Config.Clang;LldLink=$Config.LldLink}
     if($Config.VcVars){$options.VcVars=$Config.VcVars}
     if($SelectedAction -eq 'StageUnlock'){$options.StageUnlock=$true}
+    if($SelectedAction -eq 'Probe' -and $Config.SupportsProbeOnly){$options.ProbeOnly=$true}
     return $options
 }
 function Invoke-UGPipeline($Config,[string]$SelectedAction) {
@@ -307,7 +365,8 @@ function Invoke-UGPipeline($Config,[string]$SelectedAction) {
     if($Config.Workflow -eq 'pair') {
         $source=Get-UGRepositoryCheck $Config.Repo
         if($source.Status -ne 'PASS' -or $source.Workflow -ne 'pair' -or
-           ($SelectedAction -in @('Build','StageUnlock') -and !$source.SupportsPairWrite)) {
+           ($SelectedAction -in @('Build','StageUnlock') -and !$source.SupportsPairWrite) -or
+           ($options.ProbeOnly -and !$source.SupportsProbeOnly)) {
             throw 'Reviewed paired source integrity or pipeline availability changed; nothing was dispatched.'
         }
     }
@@ -346,11 +405,14 @@ function Invoke-UGMain($Options) {
         Write-Host 'This is a diagnostic retry, not a compatibility approval. Review the refusal above and correct its cause before another cold capture. Existing private evidence is preserved by the upstream workflow.'
     }
     $null=Invoke-UGExecution $readiness $Options.Action ([bool]$Options.Execute)
-    if($decision.WillExecute -and $Options.Action -eq 'Probe'){Write-Host 'Probe staged. Fully shut down, boot the USB, let Windows return, then do a second full-shutdown USB boot. Run Build afterward.'}
+    if($decision.WillExecute -and $Options.Action -eq 'Probe'){
+        if($readiness.Config.InventoryOnly){Write-Host 'Inventory probe staged. Boot the USB once after a full shutdown and keep the resulting diagnostic for review.'}
+        else{Write-Host 'Probe staged. Fully shut down, boot the USB, let Windows return, then do a second full-shutdown USB boot. Run Build afterward.'}
+    }
     if($decision.WillExecute -and $Options.Action -eq 'Build'){Write-Host 'Build/test step finished. Review upstream output; StageUnlock is a separate explicit step.'}
     if($decision.WillExecute -and $Options.Action -eq 'StageUnlock'){Write-Host 'Unlock files staged. Read the upstream USB guide before the supervised first cold boot. No boot priority was changed.'}
     if($Options.Action -eq 'Check'){
-        $next=if($readiness.CaptureCount -ge 2){'Build'}else{'Probe'}
+        $next=if($readiness.CaptureCount -ge 2 -and !$readiness.Config.InventoryOnly){'Build'}else{'Probe'}
         $nextDecision=Get-UGDecision $readiness $next $false
         if($nextDecision.Blockers.Count){Write-Host "Check only: $next is blocked by the checks above. Do not stage or repeat USB boots until the reason is addressed."}
         elseif(@($readiness.Checks | Where-Object {$_.Name -eq 'Existing probe evidence' -and $_.Status -eq 'BLOCKED'}).Count){Write-Host 'Check only: review the diagnostic refusal above. Do not repeat unchanged boots. After correcting the cause, an explicit Probe retry can prepare another diagnostic capture; it does not authorize an unlock.'}

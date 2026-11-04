@@ -1,5 +1,11 @@
 # Changes
 
+## 0.2.1 — 2026-11-04 (test build)
+
+- Add RTX 3080 12GB `220A` and the MSI RTX 3070 Ti `2482` / subsystem `1462:5052` as candidates for the guarded profile workflow.
+- Add read-only inventory for the other NVIDIA-listed GeForce RTX 30-series IDs. An inventory-only result blocks unlock building and staging.
+- Explain PCI decode and legacy BIOS video failures in `Check` using the diagnostic log.
+
 ## 0.2.0 — 2026-11-01 (experimental)
 
 - Add the complete reviewed one/two-card capture, per-machine profile, applicable actual-input host-test, build and explicit staging pipeline in an isolated source checkout.

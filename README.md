@@ -1,22 +1,26 @@
 # Windows GPU Unlock Starter Kit
 
-**Version 0.2.0 experimental: one or two selected RTX 30-series GPUs. Physical two-card boot/recovery and performance remain unverified.**
+**Version 0.2.1 test build.** Read-only inventory for NVIDIA-listed RTX 30-series cards and an experimental unlock path for selected configurations.
 
-[Download source-only kit](dist/gpu-unlock-starter-kit-v0.2.0.zip) · [Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [One/two-card implementation](experimental/dual-gpu/README.md) · [Originating results](docs/ORIGINATING-RESULTS.md)
+[Step-by-step setup](docs/QUICKSTART.md) · [Compatibility](docs/COMPATIBILITY.md) · [One/two-card implementation](experimental/dual-gpu/README.md) · [Originating results](docs/ORIGINATING-RESULTS.md)
 
 The helper detects one or two installed candidate NVIDIA cards, prepares a read-only USB probe, generates a profile from that PC's own complete captures, runs the required host jobs and builds the exact local USB unlock package. Build and staging are separate explicit actions. The guarded one/two-card path is implemented; passing its host tests does not establish physical two-card qualification.
 
-Every installed NVIDIA display controller must be admitted. All entries use vendor `10DE`:
+The unlock path requires every installed NVIDIA display controller to be an admitted candidate. These device IDs all use vendor `10DE`.
 
 | Card | Candidate device ID |
 |---|---|
 | RTX 3060 12GB, selected variants | `2487`, `2504` |
 | RTX 3060 Ti 8GB, selected variant | `24C9` |
 | RTX 3070 8GB, selected variant | `2484` |
+| MSI RTX 3070 Ti 8GB | `2482` with subsystem `1462:5052` |
+| RTX 3080 12GB | `220A` |
 | RTX 3090 24GB | `2204` |
 | RTX 3090 Ti 24GB | `2203` |
 
-Identical or different admitted models can form the two-card set. An ID match is preliminary: exact chip/VRAM, PCI resources, UEFI driver code and console ownership still have to pass. Third, unsupported, unknown or ambiguous NVIDIA controllers are refused. RTX 3080 `2206`, RTX 3070 Ti, other unlisted variants, laptop variants and RTX 20/40/50 cards are outside this kit.
+Identical or different candidates can form a two-card set. The kit checks exact chip and VRAM, PCI resources, UEFI driver code, console ownership and both cold captures before an unlock build. Physical two-card validation is pending.
+
+For other IDs in the [RTX 30-series catalog](rtx30-pci.json), including the RTX 3050, RTX 3080 10GB and laptop variants, `Check` shows `OBSERVE`. `Probe` can collect a read-only UEFI inventory for review. Build and StageUnlock require a qualified candidate on every card.
 
 ## Start here
 

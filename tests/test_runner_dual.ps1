@@ -54,6 +54,20 @@ try {
     Assert-True ((Get-UGGpuAssessment @((Video '2204'),(Video '2484'),(Video '2504')) $script:UGKnownIds).Status -eq 'BLOCKED') 'Third GPU was accepted.'
     Assert-True ((Get-UGGpuAssessment @((Video '2204'),(Video '2204')) $script:UGKnownIds).Status -eq 'UNKNOWN') 'Duplicate CIM row was treated as two cards.'
     Assert-True ((Get-UGGpuAssessment @((Video '2206')) @('220610de')).Status -eq 'BLOCKED') 'An edited envelope widened the fixed candidate set.'
+    Assert-True ((Get-UGGpuAssessment @((Video '220a')) $script:UGKnownIds).Status -eq 'CANDIDATE') 'The reviewed 3080 12 GB identity was refused.'
+    $msi3070ti=Video '2482'
+    $msi3070ti.PNPDeviceID=$msi3070ti.PNPDeviceID.Replace('SUBSYS_00000000','SUBSYS_50521462')
+    Assert-True ((Get-UGGpuAssessment @($msi3070ti) $script:UGKnownIds).Status -eq 'CANDIDATE') 'The exact MSI 3070 Ti subsystem was refused.'
+    foreach($id in @('2482','2206','2208','2584','25a2','28e3')) {
+        $observation=Get-UGGpuAssessment @((Video '2204'),(Video $id)) $script:UGKnownIds -AllowObservation
+        $ready=ReadyPair 2
+        $ready.Checks=@($ready.Checks[0],$observation)
+        $ready.Config.InventoryOnly=$true
+        Assert-True ($observation.Status -eq 'OBSERVE' -and $observation.TargetCount -eq 2 -and
+            (Get-UGDecision $ready Probe $true).WillExecute -and !(Get-UGDecision $ready Build $true).WillExecute -and
+            !(Get-UGDecision $ready StageUnlock $true).WillExecute) ('Inventory-only GPU crossed the write boundary or could not be diagnosed: '+$id)
+    }
+    Assert-True ((Get-UGGpuAssessment @((Video '2704')) $script:UGKnownIds -AllowObservation).Status -eq 'BLOCKED') 'Unrelated GPU gained RTX 30 inventory admission.'
 
     $single=ConvertFrom-UGDiagnostic (PairLog 1) 'DIAG00.TXT' -ExpectedTargets 2 -PairMode
     Assert-True (!$single.Complete) 'A one-card file counted as a two-card whole-set capture.'
@@ -67,6 +81,31 @@ try {
                        (PairLog 2).Replace('capture-complete=1',"incomplete malformed`r`ncapture-complete=1"))) {
         Assert-True (!(ConvertFrom-UGDiagnostic $text 'DIAG00.TXT' -ExpectedTargets 2 -PairMode).Complete) 'Malformed pair record counted as complete.'
     }
+    $legacyVideoLog=@'
+dual-probe-v1 max-targets=2 readonly=1
+incomplete reason=dual-unreviewed-envelope status=0x8000000000000003
+handle id=0x0000000000000001
+driver image=0x0000000000000001 binding=0x0000000000000001 version=0x0000000000000024 stop-address=0x0000000000000010
+image-file-path-node raw=04061400f855cf2975b65d4f8f2fb87a3ecfd063
+handle id=0x0000000000000002
+protocol guid=4cf5b200-68b8-4ca5-9eec-b23e3f50029a
+opens status=0x0000000000000000 count=0x0000000000000001
+open agent=0x0000000000000001 controller=0x0000000000000002 attributes=0x0000000000000010 count=0x0000000000000001
+pci config-status=0x0000000000000000
+pci config-dwords=220410de 00100007 030000a1 00800010
+handle id=0x0000000000000003
+protocol guid=4cf5b200-68b8-4ca5-9eec-b23e3f50029a
+pci config-status=0x0000000000000000
+pci config-dwords=250410de 00100000 030000a1 00800010
+capture-complete=0
+diagnostic-result status=0x8000000000000006
+'@
+    $record=ConvertFrom-UGDiagnostic $legacyVideoLog 'DIAG00.TXT' -ExpectedTargets 2 -PairMode
+    Assert-True (!$record.Complete -and ($record.Reasons -match 'disable Launch CSM') -and
+        ($record.Reasons -match '10DE:2204.*bus mastering enabled') -and ($record.Reasons -match '10DE:2504.*memory decoding disabled')) 'Active legacy video ownership or PCI command refusal was not explained.'
+    $passiveLog=$legacyVideoLog.Replace('attributes=0x0000000000000010','attributes=0x0000000000000002')
+    $passive=ConvertFrom-UGDiagnostic $passiveLog 'DIAG00.TXT' -ExpectedTargets 2 -PairMode
+    Assert-True (!$passive.Complete -and !($passive.Reasons -match 'Launch CSM')) 'A loaded legacy driver with only a passive open was reported as the GPU owner.'
     $captureFolder=Join-Path $script:UGFixtureRoot 'captures'
     Write-Fixture (Join-Path $captureFolder 'DIAG00.TXT') (PairLog 1)
     Write-Fixture (Join-Path $captureFolder 'DIAG01.TXT') (PairLog 1)
@@ -103,8 +142,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $originalSourceRoot 'Get-Source.ps1') -Destination (Join-Path $source 'Get-Source.ps1')
     $entry=Join-Path $target 'research/dual/new-machine.ps1'
     Write-Fixture $entry @'
-param($Drive,$WindowsEspGuid,$Assets,$Python,$Clang,$LldLink,$VcVars,[switch]$StageUnlock)
-$global:UGDispatched=@{Drive=$Drive;WindowsEspGuid=$WindowsEspGuid;Assets=$Assets;StageUnlock=[bool]$StageUnlock;VcVars=$VcVars}
+param($Drive,$WindowsEspGuid,$Assets,$Python,$Clang,$LldLink,$VcVars,[switch]$StageUnlock,[switch]$ProbeOnly)
+$global:UGDispatched=@{Drive=$Drive;WindowsEspGuid=$WindowsEspGuid;Assets=$Assets;StageUnlock=[bool]$StageUnlock;ProbeOnly=[bool]$ProbeOnly;VcVars=$VcVars}
 $global:LASTEXITCODE=0
 '@
     Write-Fixture (Join-Path $target 'deps/edk2/MdePkg/Include/Uefi.h') 'SYNTHETIC HEADER; never compiled'
@@ -113,7 +152,7 @@ $global:LASTEXITCODE=0
         SourceCommit='e27d200aaaee8de67a12bce4ab48eba58c0c8551';Patch='upstream.patch';
         PatchSha256=(Get-FileHash -LiteralPath (Join-Path $source 'upstream.patch')).Hash.ToLowerInvariant();
         Files=@([pscustomobject]@{Path='research/dual/new-machine.ps1';Sha256=(Get-FileHash -LiteralPath $entry).Hash.ToLowerInvariant()});
-        CanBuildGenericDualUnlock=$true}
+        CanBuildGenericDualUnlock=$true;SupportsProbeOnly=$true}
     function Save-SourceFixture {
         Write-Fixture (Join-Path $source 'source.json') ($manifest | ConvertTo-Json -Depth 6)
         $receipt=[ordered]@{Format=1;SourceUrl=$manifest.SourceUrl;SourceCommit=$manifest.SourceCommit;PatchSha256=$manifest.PatchSha256;
@@ -124,10 +163,10 @@ $global:LASTEXITCODE=0
     $script:UGDualSourceRoot=$source
     $checked=Get-UGRepositoryCheck $target
     Assert-True ($checked.Status -eq 'PASS' -and $checked.Workflow -eq 'pair' -and $checked.SupportsPairWrite) ('Receipt-bound patched checkout refused: '+$checked.Detail)
-    $config=(ReadyPair).Config;$config.Repo=$target
+    $config=(ReadyPair).Config;$config.Repo=$target;$config.SupportsProbeOnly=$true
     $global:UGDispatched=$null
     Invoke-UGPipeline $config StageUnlock
-    Assert-True ($global:UGDispatched.Drive -eq 'Z' -and $global:UGDispatched.StageUnlock -and $global:UGDispatched.Assets -eq 'assets' -and $global:UGDispatched.VcVars -eq 'vcvars') 'Verified paired dispatch lost the existing pipeline contract.'
+    Assert-True ($global:UGDispatched.Drive -eq 'Z' -and $global:UGDispatched.StageUnlock -and !$global:UGDispatched.ProbeOnly -and $global:UGDispatched.Assets -eq 'assets' -and $global:UGDispatched.VcVars -eq 'vcvars') 'Verified paired dispatch lost the existing pipeline contract.'
     $manifest.CanBuildGenericDualUnlock=$false;Save-SourceFixture
     $checked=Get-UGRepositoryCheck $target
     Assert-True ($checked.Status -eq 'PASS' -and !$checked.SupportsPairWrite) 'Source integrity was confused with write availability.'
@@ -135,7 +174,7 @@ $global:LASTEXITCODE=0
     Assert-Refused {Invoke-UGPipeline $config StageUnlock} 'Incomplete source pipeline reached StageUnlock.'
     Assert-True ($null -eq $global:UGDispatched) 'Blocked write pipeline executed its entry script.'
     Invoke-UGPipeline $config Probe
-    Assert-True ($null -ne $global:UGDispatched -and !$global:UGDispatched.StageUnlock) 'Verified read-only route could not dispatch Probe.'
+    Assert-True ($null -ne $global:UGDispatched -and $global:UGDispatched.ProbeOnly -and !$global:UGDispatched.StageUnlock) 'Verified read-only route could not dispatch ProbeOnly.'
     $manifest.CanBuildGenericDualUnlock=$true;Save-SourceFixture
     $originalEntry=[IO.File]::ReadAllBytes($entry)
     Write-Fixture $entry 'unreviewed source edit'

@@ -1,3 +1,18 @@
+Starter Kit 0.2.1 test build, 2026-11-04
+
+- All 48 catalog IDs routed correctly in mocked Windows inventory. The 50 paired
+  runner checks and 34 source orchestration checks passed in PowerShell 7 and 5.1.
+  Inventory-only GPUs were blocked from Build and StageUnlock with stale captures.
+- The 87 dual and 273 generic RAM-only probe checks passed. C-generated records
+  for the newly admitted pair round-tripped through the offline parser. The probe
+  compiled and passed EFI PE checks using a dummy Windows EFI partition GUID.
+- 31 legacy parser and compatibility tests, 16 pair analyzer tests, and 12 pair
+  generator tests passed. Exact subsystem and driver-code refusals were exercised.
+- The patch applied to a fresh pinned checkout. The source receipt, probe-only
+  route, and firmware asset plan verified. The submitted diagnostic reproduced
+  the legacy BIOS video and PCI command warnings without uploading its contents.
+- Physical boots of the added configurations and the inventory route are pending.
+
 Starter Kit 0.2.0 — experimental one/two-card validation, 2026-11-01
 
 - Complete software path: whole-set read-only captures, exact local one/two-card
