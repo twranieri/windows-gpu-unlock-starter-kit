@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference='Stop'
-if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.9') {
+if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.10') {
     throw 'Setup executable and scripts are from different builds. Extract the whole matching ZIP into a new local folder and open Setup there.'
 }
 if(!$WorkDirectory){$WorkDirectory=Join-Path $PSScriptRoot '.local/rtx'}
@@ -41,7 +41,7 @@ function Get-RtxBootProblems($Preparation) {
              $Preparation.EncryptionPercentage -ne 0) {
         'The Windows volume must be fully decrypted with BitLocker protection off.'
     }
-    if($Preparation.FastStartupState -eq 'Enabled'){'Disable Windows Fast Startup before collecting a cold probe.'}
+    if($Preparation.FastStartupState -in @('Enabled','NotConfigured')){'Disable Windows Fast Startup before collecting a cold probe.'}
     elseif($Preparation.FastStartupState -eq 'ManagedEnabled'){'Windows policy requires Fast Startup. Contact the Windows administrator to review that policy before boot preparation.'}
     elseif($Preparation.FastStartupState -ne 'Disabled'){'Could not verify Windows Fast Startup.'}
 }

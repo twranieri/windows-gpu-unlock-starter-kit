@@ -1,5 +1,11 @@
 # Changes
 
+## 0.4.0-preview.10 — 2026-11-10
+
+- Offer verified USB formatting first when the remaining Windows settings can be corrected in Setup.
+- Use one confirmation for the selected USB format and the Windows changes that follow. Setup verifies Windows Fast Startup is off and checks BitLocker decryption progress before offering the probe.
+- Allow Setup to set Fast Startup off when the local Windows setting is absent and policy permits the change.
+
 ## 0.4.0-preview.9 — 2026-11-10
 
 - Show the Setup build in the window title and require the executable and desktop backend to match.

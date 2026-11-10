@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.9")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.10")]
 
 namespace RtxSetup
 {
@@ -384,7 +384,7 @@ namespace RtxSetup
             if (action == "FormatUsb")
             {
                 var eligible = FindFormatDrive(state, usb);
-                if (nextAction != "FormatUsb" || eligible == null || !HasVerifiedBootPrerequisites(state) ||
+                if (nextAction != "FormatUsb" || eligible == null || !HasVerifiedBootPrerequisites(state, true) ||
                     (eligible.FileSystem == "FAT32" && !CanFormatBlockedFat32(state, eligible, KitTargetListMissing)))
                 {
                     MessageBox.Show(this, "The selected USB is no longer eligible to format. Refresh and select the intended drive.",
@@ -396,15 +396,18 @@ namespace RtxSetup
             var letter = usb == null ? null : usb.Letter;
             string preferredVolume = usb == null ? requestedVolume : usb.VolumeId;
             bool windowsAction = action == "FixFastStartup" || action == "DisableEncryption";
+            bool fixFastStartupAfterFormat = action == "FormatUsb" && state.CanFixFastStartup;
+            bool disableEncryptionAfterAction = (action == "FormatUsb" || action == "FixFastStartup") && state.CanDisableEncryption;
             if (action != null)
             {
                 if (!windowsAction && (usb == null || string.IsNullOrEmpty(usb.VolumeId))) return;
-                if (!ConfirmAction(action, usb)) return;
+                if (!ConfirmAction(action, usb, fixFastStartupAfterFormat, disableEncryptionAfterAction)) return;
             }
             busy = true;
             UpdateButtons();
             string failure = null;
             string unexpectedFailure = null;
+            bool justFormatted = false;
             try
             {
                 bool completed = false;
@@ -424,9 +427,22 @@ namespace RtxSetup
                         failure = "Setup engine exit code " + result.ExitCode + Environment.NewLine + result.Error;
                         Append("Operation stopped. Review the activity above.");
                     }
+                    justFormatted = completed && action == "FormatUsb";
+                    if (justFormatted && fixFastStartupAfterFormat)
+                    {
+                        Append("FAT32 format verified. Turning off Windows Fast Startup.");
+                        failure = await RunWindowsFollowup("FixFastStartup", "FAT32 format verified. Setup could not turn off Windows Fast Startup.");
+                        if (failure != null) Append(failure);
+                    }
+                    if (completed && failure == null && disableEncryptionAfterAction)
+                    {
+                        Append("Starting BitLocker decryption on " + state.SystemDrive + ".");
+                        string message = justFormatted ? "FAT32 format verified. " : "";
+                        failure = await RunWindowsFollowup("DisableEncryption", message + "Setup could not start BitLocker decryption.");
+                        if (failure != null) Append(failure);
+                    }
                 }
                 state = await ReadStatus(letter);
-                bool justFormatted = completed && action == "FormatUsb";
                 var selected = FindRefreshDrive(GetDrives(state), preferredVolume, justFormatted ? letter : null);
                 string selection = selected == null ? null : selected.Letter;
                 if (selection != letter)
@@ -444,10 +460,21 @@ namespace RtxSetup
                     }
                 }
                 requestedVolume = selection == null && !justFormatted ? preferredVolume : null;
+                if (justFormatted && fixFastStartupAfterFormat && state.FastStartupState != "Disabled" && failure == null)
+                {
+                    failure = "FAT32 format verified. Windows Fast Startup could not be confirmed off after refreshing.";
+                    Append(failure);
+                }
+                if (completed && (disableEncryptionAfterAction || action == "DisableEncryption") && failure == null &&
+                    !IsFullyDecrypted(state) && state.EncryptionState != "DecryptionInProgress")
+                {
+                    failure = "Setup could not verify that Windows started BitLocker decryption.";
+                    Append(failure);
+                }
                 ShowStatus(selection);
                 UpdateResumeAfterFlow(action, completed);
                 var currentUsb = drives.SelectedItem as UsbDrive;
-                var checkFailure = lastResumeCleanupError ?? SetupDiagnostics.GetCheckFailure(state);
+                var checkFailure = lastResumeCleanupError ?? SetupDiagnostics.GetCheckFailure(state, nextAction == "FormatUsb");
                 if (failure != null || checkFailure != null)
                     await OpenDiagnostics(action ?? "Setup check", failure ?? checkFailure, currentUsb ?? usb, action != null);
                 else
@@ -467,7 +494,7 @@ namespace RtxSetup
                 state = null;
                 nextAction = null;
                 phase.Text = "Setup check failed";
-                next.Text = error.Message;
+                next.Text = justFormatted ? "FAT32 format verified. Click Refresh before continuing. " + error.Message : error.Message;
                 if (error.Message == BuildMismatch) OfferExtractionHelp(BuildMismatch);
                 Append(error.Message);
                 unexpectedFailure = failure ?? error.Message;
@@ -483,6 +510,19 @@ namespace RtxSetup
             if (unexpectedFailure == null) return;
             try { await OpenDiagnostics(action ?? "Setup check", unexpectedFailure, usb, action != null); }
             finally { busy = false; UpdateButtons(); }
+        }
+
+        private async Task<string> RunWindowsFollowup(string action, string message)
+        {
+            try
+            {
+                var result = await RunBackend(action, null, null);
+                return result.ExitCode == 0 ? null : message + Environment.NewLine + result.Error;
+            }
+            catch (Exception error)
+            {
+                return message + Environment.NewLine + error.Message;
+            }
         }
 
         private async Task OpenDiagnostics(string step, string detail, UsbDrive usb, bool force, Action<string> notify = null)
@@ -504,7 +544,7 @@ namespace RtxSetup
             }
         }
 
-        private bool ConfirmAction(string action, UsbDrive usb)
+        private bool ConfirmAction(string action, UsbDrive usb, bool fixFastStartupAfterFormat, bool disableEncryptionAfterAction)
         {
             string prompt;
             switch (action)
@@ -517,8 +557,10 @@ namespace RtxSetup
                         "Save your recovery key and allow decryption to finish before changing BIOS settings.";
                     break;
                 case "FormatUsb":
-                    prompt = string.Format("Erase every file on USB {0}: ({1}, {2}, {3:0.0} GB) and format it as FAT32? Check the letter and back up its files before continuing.",
+                    prompt = string.Format("Erase every file on USB {0}: ({1}, {2}, {3:0.0} GB) and format it as FAT32? Check the letter and size before confirming.",
                         usb.Letter, string.IsNullOrWhiteSpace(usb.Label) ? "unnamed drive" : usb.Label, usb.DiskModel, usb.TotalBytes / 1e9);
+                    if (fixFastStartupAfterFormat)
+                        prompt += "\r\n\r\nAfter verifying the format, Setup will also turn off Windows Fast Startup and verify the setting.";
                     break;
                 case "Prepare":
                     prompt = "Prepare the read-only probe on " + usb + "? Use a dedicated, backed-up USB drive.";
@@ -535,7 +577,10 @@ namespace RtxSetup
                     prompt = "Restore the verified read-only probe on " + usb + "? This clears the old USB boot log. Save a copy first if you need it.";
                     break;
             }
-            bool sensitive = action == "FormatUsb" || action == "DisableEncryption";
+            if (disableEncryptionAfterAction)
+                prompt += "\r\n\r\nSetup will also start turning off BitLocker or Device Encryption on " + state.SystemDrive +
+                    ". Windows will decrypt that drive and remove its protection. Keep Windows running until Setup verifies that decryption is complete.";
+            bool sensitive = action == "FormatUsb" || action == "DisableEncryption" || disableEncryptionAfterAction;
             return MessageBox.Show(this, prompt, Text, MessageBoxButtons.OKCancel,
                 sensitive ? MessageBoxIcon.Warning : MessageBoxIcon.Information,
                 sensitive ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) == DialogResult.OK;
@@ -597,10 +642,15 @@ namespace RtxSetup
                 status.ProtectionState == "Off" && status.EncryptionPercentage == 0;
         }
 
-        private static bool HasVerifiedBootPrerequisites(KitStatus status)
+        private static bool HasVerifiedBootPrerequisites(KitStatus status, bool allowWindowsFixes = false)
         {
-            return IsFullyDecrypted(status) && status.FirmwareState == "Ready" && status.FastStartupState == "Disabled" &&
-                status.BootProblems != null && status.BootProblems.Length == 0 &&
+            if (status == null || status.BootProblems == null) return false;
+            bool pendingFastStartup = allowWindowsFixes && status.CanFixFastStartup &&
+                (status.FastStartupState == "Enabled" || status.FastStartupState == "NotConfigured");
+            bool pendingEncryption = allowWindowsFixes && status.CanDisableEncryption;
+            int expectedProblems = (pendingFastStartup ? 1 : 0) + (pendingEncryption ? 1 : 0);
+            return (IsFullyDecrypted(status) || pendingEncryption) && status.FirmwareState == "Ready" &&
+                (status.FastStartupState == "Disabled" || pendingFastStartup) && status.BootProblems.Length == expectedProblems &&
                 status.WindowsDisplayProblems != null && status.WindowsDisplayProblems.Length == 0 &&
                 string.IsNullOrWhiteSpace(status.InventoryError) && string.IsNullOrWhiteSpace(status.PackageError) &&
                 string.IsNullOrWhiteSpace(status.StorageError);
@@ -709,17 +759,21 @@ namespace RtxSetup
             if (nextAction != "Help" && (selected == null || string.IsNullOrEmpty(selected.VolumeId))) nextAction = null;
             bool canConfigure = state.Targets.Length > 0 && string.IsNullOrEmpty(state.InventoryError) &&
                 (state.HasPackage || string.IsNullOrEmpty(state.BundleError));
-            if (canConfigure && eligibleFormat != null && HasVerifiedBootPrerequisites(state) &&
+            if (canConfigure && eligibleFormat != null && HasVerifiedBootPrerequisites(state, true) &&
                 (eligibleFormat.FileSystem != "FAT32" || CanFormatBlockedFat32(state, eligibleFormat, KitTargetListMissing)))
             {
-                phase.Text = eligibleFormat.FileSystem == "FAT32" ? "Back up and clear this USB" : "Format this USB as FAT32";
-                next.Text = "Back up every file and verify the copy first. Then click Format USB and confirm the drive letter. Formatting erases the selected USB.";
+                phase.Text = "Format this USB as FAT32";
+                next.Text = "Check the USB letter and size, then click Format USB. This erases the selected USB.";
+                if (state.CanFixFastStartup) next.Text += " Setup will then turn off Windows Fast Startup.";
+                if (state.CanDisableEncryption) next.Text += " Setup will also start BitLocker decryption.";
                 nextAction = "FormatUsb";
             }
-            if (canConfigure && state.CanFixFastStartup)
+            else if (canConfigure && state.CanFixFastStartup)
             {
-                phase.Text = "Turn off Fast Startup";
-                next.Text = "Click Turn off Fast Startup. Setup will change the Windows setting and verify it.";
+                phase.Text = state.CanDisableEncryption ? "Fix Windows settings" : "Turn off Fast Startup";
+                next.Text = state.CanDisableEncryption
+                    ? "Click Fix Windows settings. Setup will turn off Windows Fast Startup and start BitLocker decryption after you confirm."
+                    : "Click Turn off Fast Startup. Setup will change the Windows setting and verify it.";
                 nextAction = "FixFastStartup";
             }
             else if (canConfigure && state.CanDisableEncryption)
@@ -746,7 +800,7 @@ namespace RtxSetup
             {
                 OfferExtractionHelp("Setup could not verify its files. Click Show extraction steps for a clean local copy.");
             }
-            if (nextAction == "FixFastStartup") primary.Text = "Turn off Fast Startup";
+            if (nextAction == "FixFastStartup") primary.Text = state.CanDisableEncryption ? "Fix Windows settings" : "Turn off Fast Startup";
             else if (nextAction == "DisableEncryption") primary.Text = "Turn off BitLocker";
             else if (nextAction == "BiosHelp") primary.Text = "Show BIOS steps";
             else if (nextAction == "ExtractHelp") primary.Text = "Show extraction steps";

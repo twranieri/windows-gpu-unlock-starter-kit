@@ -8,6 +8,9 @@ $script:Fast=1
 $script:PolicyFast=$null
 $script:Secure=$false
 $script:FastWrites=0
+$script:FastCreates=0
+$script:FastReadFailure=$null
+$script:IgnoreFastWrite=$false
 $script:DecryptWrites=0
 $script:FormatWrites=0
 $script:DiskReads=0
@@ -37,18 +40,26 @@ $script:BitLocker=[pscustomobject]@{
 function Test-RtxAdministrator { $script:Admin }
 function Get-RtxSystemDrive { 'C:' }
 function Get-RtxInventory { throw 'Preparation must not depend on NVIDIA inventory.' }
-function Get-ItemProperty($LiteralPath,$Name) {
+function Get-ItemProperty($LiteralPath) {
     if($LiteralPath -ceq $script:RtxFastStartupPolicyKey) {
         if($null -eq $script:PolicyFast){throw [System.Management.Automation.ItemNotFoundException]::new('Policy key missing.')}
         return [pscustomobject]@{HiberbootEnabled=$script:PolicyFast}
     }
-    if($LiteralPath -cne $script:RtxPowerKey -or $Name -cne 'HiberbootEnabled'){throw 'Wrong registry read.'}
+    if($LiteralPath -cne $script:RtxPowerKey){throw 'Wrong registry read.'}
+    if($script:FastReadFailure){throw $script:FastReadFailure}
+    if($null -eq $script:Fast){return [pscustomobject]@{}}
     [pscustomobject]@{HiberbootEnabled=$script:Fast}
 }
 function Set-ItemProperty($LiteralPath,$Name,$Value) {
     if($LiteralPath -cne $script:RtxPowerKey -or $Name -cne 'HiberbootEnabled' -or $Value -ne 0){throw 'Wrong registry write.'}
     $script:FastWrites++
-    $script:Fast=$Value
+    if(!$script:IgnoreFastWrite){$script:Fast=$Value}
+}
+function New-ItemProperty($LiteralPath,$Name,$PropertyType,$Value,[switch]$Force) {
+    if($LiteralPath -cne $script:RtxPowerKey -or $Name -cne 'HiberbootEnabled' -or $PropertyType -cne 'DWord' -or
+       $Value -isnot [int] -or $Value -ne 0 -or $Force -or $null -ne $script:Fast){throw 'Wrong registry creation.'}
+    $script:FastCreates++
+    if(!$script:IgnoreFastWrite){$script:Fast=$Value}
 }
 function Get-BitLockerVolume($MountPoint) {
     if($MountPoint -cne 'C:'){throw 'Wrong BitLocker volume queried.'}
@@ -132,7 +143,44 @@ if((Get-RtxWindowsPreparation).FirmwareState -cne 'SecureBootOn'){throw 'Secure 
 $script:Secure=$false
 Invoke-PrepTest 'fixfaststartup' $true
 Invoke-PrepTest 'FixFastStartup' $true
-if($script:FastWrites -ne 1 -or (Get-RtxWindowsPreparation).FastStartupState -cne 'Disabled'){throw 'Fast Startup action was not verified or idempotent.'}
+if($script:FastWrites -ne 1 -or $script:FastCreates -or
+   (Get-RtxWindowsPreparation).FastStartupState -cne 'Disabled'){throw 'Fast Startup action was not verified or idempotent.'}
+
+$script:Fast=$null
+$missing=Get-RtxWindowsPreparation
+if($missing.FastStartupState -cne 'NotConfigured' -or !$missing.CanFixFastStartup){
+    throw 'An absent value in a readable Power key must offer the guided Fast Startup action.'
+}
+$script:Admin=$false
+if((Get-RtxWindowsPreparation).CanFixFastStartup){throw 'A standard user was offered a machine-wide Fast Startup change.'}
+$script:Admin=$true
+$script:PolicyFast=1
+Assert-Refusal {Invoke-PrepTest 'FixFastStartup' $true} '*policy requires Fast Startup*'
+$script:PolicyFast=$null
+foreach($failure in @([UnauthorizedAccessException]::new(),[System.Management.Automation.ItemNotFoundException]::new())){
+    $script:FastReadFailure=$failure
+    $unknown=Get-RtxWindowsPreparation
+    if($unknown.FastStartupState -cne 'Unknown' -or $unknown.CanFixFastStartup){throw 'An inaccessible Power key allowed Fast Startup configuration.'}
+    Assert-Refusal {Invoke-PrepTest 'FixFastStartup' $true} '*Could not verify the current Fast Startup setting*'
+}
+$script:FastReadFailure=$null
+$script:Fast='0'
+$malformed=Get-RtxWindowsPreparation
+if($malformed.FastStartupState -cne 'Unknown' -or $malformed.CanFixFastStartup){throw 'A malformed local value allowed Fast Startup configuration.'}
+Assert-Refusal {Invoke-PrepTest 'FixFastStartup' $true} '*Could not verify the current Fast Startup setting*'
+if($script:FastWrites -ne 1 -or $script:FastCreates){throw 'An unverifiable Fast Startup state reached a registry write.'}
+
+$script:IgnoreFastWrite=$true
+foreach($initial in @(1,$null)){
+    $script:Fast=$initial
+    Assert-Refusal {Invoke-PrepTest 'FixFastStartup' $true} '*Windows did not report Fast Startup off after the change*'
+}
+$script:IgnoreFastWrite=$false
+Invoke-PrepTest 'FixFastStartup' $true
+Invoke-PrepTest 'FixFastStartup' $true
+if($script:FastWrites -ne 2 -or $script:FastCreates -ne 2 -or
+   (Get-RtxWindowsPreparation).FastStartupState -cne 'Disabled'){throw 'Fast Startup DWORD creation was not verified or idempotent.'}
+
 $script:BitLocker.AutoUnlockKeyStored=$true
 Assert-Refusal {Invoke-PrepTest 'DisableEncryption' $true} '*not ready to start decryption*'
 $script:BitLocker.AutoUnlockKeyStored=$false

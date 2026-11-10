@@ -41,10 +41,13 @@ function Get-RtxFastStartupState {
         # When the policy key is absent, Windows uses the local power setting.
     } catch {return 'Unknown'}
     try {
-        $value=(Get-ItemProperty -LiteralPath $script:RtxPowerKey -Name HiberbootEnabled -ErrorAction Stop).HiberbootEnabled
-        if($value -is [int]) {
-            if($value -eq 0){return 'Disabled'}
-            if($value -eq 1){return 'Enabled'}
+        $power=Get-ItemProperty -LiteralPath $script:RtxPowerKey -ErrorAction Stop
+        if($null -eq $power){return 'Unknown'}
+        $local=$power.PSObject.Properties['HiberbootEnabled']
+        if($null -eq $local){return 'NotConfigured'}
+        if($local.Value -is [int]) {
+            if($local.Value -eq 0){return 'Disabled'}
+            if($local.Value -eq 1){return 'Enabled'}
         }
     } catch {}
     return 'Unknown'
@@ -114,7 +117,7 @@ function Get-RtxWindowsPreparation {
         IsAdministrator=$admin
         FirmwareState=Get-RtxFirmwareState
         FastStartupState=$fast
-        CanFixFastStartup=$admin -and $fast -eq 'Enabled'
+        CanFixFastStartup=$admin -and $fast -in @('Enabled','NotConfigured')
         SystemDrive=$systemDrive
         EncryptionState=$encryption.EncryptionState
         ProtectionState=$encryption.ProtectionState
@@ -127,8 +130,13 @@ function Disable-RtxFastStartup {
     $state=Get-RtxFastStartupState
     if($state -eq 'Disabled'){Write-Host 'Windows Fast Startup is already off.';return}
     if($state -eq 'ManagedEnabled'){throw 'Windows policy requires Fast Startup. Contact the Windows administrator to review that policy.'}
-    if($state -ne 'Enabled'){throw 'Could not verify the current Fast Startup setting.'}
-    Set-ItemProperty -LiteralPath $script:RtxPowerKey -Name HiberbootEnabled -Value 0 -ErrorAction Stop
+    if($state -eq 'NotConfigured') {
+        $null=New-ItemProperty -LiteralPath $script:RtxPowerKey -Name HiberbootEnabled -PropertyType DWord -Value 0 -ErrorAction Stop
+    } elseif($state -eq 'Enabled') {
+        Set-ItemProperty -LiteralPath $script:RtxPowerKey -Name HiberbootEnabled -Value 0 -ErrorAction Stop
+    } else {
+        throw 'Could not verify the current Fast Startup setting.'
+    }
     if((Get-RtxFastStartupState) -ne 'Disabled'){throw 'Windows did not report Fast Startup off after the change. Refresh or check Windows power policy.'}
     Write-Host 'Windows Fast Startup is off.'
 }

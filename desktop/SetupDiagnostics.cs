@@ -16,14 +16,14 @@ namespace RtxSetup
             @"\b[a-f\d]{32}\b|\b\d{6}(?:-\d{6}){7}\b|" +
             @"(?:\b[A-Z]:[\\/]|\\\\|/(?:home|Users|mnt)/)[^\r\n]*");
 
-        internal static string GetCheckFailure(KitStatus status)
+        internal static string GetCheckFailure(KitStatus status, bool canFormatUsb = false)
         {
             if (status == null) return null;
             if (!string.IsNullOrWhiteSpace(status.InventoryError)) return status.InventoryError;
             if (!string.IsNullOrWhiteSpace(status.StorageError)) return status.StorageError;
             if (!string.IsNullOrWhiteSpace(status.PackageError)) return status.PackageError;
             if (!status.HasPackage && !string.IsNullOrWhiteSpace(status.BundleError)) return status.BundleError;
-            if (status.MediaFailed) return status.MediaMessage;
+            if (status.MediaFailed && !canFormatUsb) return status.MediaMessage;
             if (status.HasLog && status.WindowsDisplayProblems != null && status.WindowsDisplayProblems.Length > 0)
                 return string.Join(Environment.NewLine, status.WindowsDisplayProblems);
             return null;

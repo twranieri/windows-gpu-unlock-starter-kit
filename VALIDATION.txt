@@ -1,3 +1,13 @@
+Starter Kit 0.4.0 desktop preview, build 10, 2026-11-10
+
+- Exercised format-first routing and the Windows action sequence with
+  synthetic USB, Fast Startup and BitLocker states.
+- Verified the Fast Startup action checks Windows policy, supports a missing
+  local DWORD, and requires an off-state readback. The probe requires complete
+  decryption with BitLocker protection off.
+- Reused the verified Preview 9 EFI and asset binaries. Physical EFI testing
+  on the reported ASUS Z890 system is pending.
+
 Starter Kit 0.4.0 desktop preview, build 9, 2026-11-10
 
 - Windows fixtures verified the order for recovery: extract into a fresh
