@@ -1,3 +1,14 @@
+Starter Kit 0.4.0 desktop preview, build 11, 2026-11-10
+
+- Downloaded the pinned CPython archive and CUDA wheels, installed them in a
+  scratch directory, ran pip check, and verified CUDA and the tensor benchmark
+  APIs against the host RTX 3090.
+- Used synthetic Windows and GPU fixtures to check one-click setup, failure
+  handling, and the stock and unlocked benchmark flow with a matched runtime.
+- Verified the Microsoft installer pin and the prerequisite detection path.
+  A complete trial from a fresh Windows installation and an unlock boot is
+  pending.
+
 Starter Kit 0.4.0 desktop preview, build 10, 2026-11-10
 
 - Exercised format-first routing and the Windows action sequence with

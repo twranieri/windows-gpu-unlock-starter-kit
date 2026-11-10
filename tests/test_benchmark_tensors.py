@@ -94,6 +94,24 @@ class TensorBenchmarkTests(unittest.TestCase):
             load.assert_not_called()
             query.assert_not_called()
 
+    def test_runtime_check_validates_selected_cuda_without_measurement_or_report(self):
+        snapshot = gpu()
+        with patch.object(B, "gpu_snapshot", return_value=snapshot) as query, \
+                patch.object(B.importlib, "import_module", return_value=object()) as load, \
+                patch.object(B, "validate_torch") as validate, patch.object(B, "measure") as measure:
+            self.assertEqual(self.quiet_main(["--check-runtime", "--gpu", snapshot["pci.bus_id"]]), 0)
+            query.assert_called_once_with(snapshot["pci.bus_id"])
+            validate.assert_called_once_with(load.return_value, snapshot)
+            measure.assert_not_called()
+
+    def test_runtime_check_failure_and_output_conflict(self):
+        with patch.object(B, "gpu_snapshot", side_effect=B.BenchmarkError("GPU unavailable")) as query:
+            self.assertEqual(self.quiet_main(["--check-runtime"]), 1)
+            query.assert_called_once()
+            with self.assertRaises(SystemExit):
+                self.quiet_main(["--check-runtime", "--output", "forbidden.json"])
+            query.assert_called_once()
+
     def test_existing_output_is_preserved_before_gpu_access(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.json"

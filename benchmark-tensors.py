@@ -327,8 +327,9 @@ def measure(torch, name, dtype_name, precision, args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--label", required=True, choices=("stock", "unlocked"), help="Operator label, not unlock proof")
-    parser.add_argument("--output", required=True, type=Path, help="New result JSON; existing files are never overwritten")
+    parser.add_argument("--label", choices=("stock", "unlocked"), help="Operator label, not unlock proof")
+    parser.add_argument("--output", type=Path, help="New result JSON; existing files are never overwritten")
+    parser.add_argument("--check-runtime", action="store_true", help="Verify CUDA PyTorch for the selected GPU without running a tensor test")
     parser.add_argument("--gpu", help="Full PCI BDF (e.g. 00000000:01:00.0); required with two installed GPUs")
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--warmup-seconds", type=float, default=2.0)
@@ -340,6 +341,19 @@ def main(argv=None):
             args.gpu = canonical_bdf(args.gpu)
         except BenchmarkError as error:
             parser.error(str(error))
+    if args.check_runtime:
+        if args.label or args.output:
+            parser.error("--check-runtime uses no label or output file")
+        try:
+            gpu = gpu_snapshot(args.gpu)
+            validate_torch(importlib.import_module("torch"), gpu)
+            print("CUDA tensor runtime verified for PCI " + gpu["pci.bus_id"], flush=True)
+            return 0
+        except Exception as error:
+            print(type(error).__name__ + ": " + str(error), file=sys.stderr, flush=True)
+            return 1
+    if args.label is None or args.output is None:
+        parser.error("A tensor test requires both --label and --output")
     if not (128 <= args.n <= 8192 and 1 <= args.samples <= 1000 and 1 <= args.trials <= 20 and
             math.isfinite(args.warmup_seconds) and 0 < args.warmup_seconds <= 60):
         parser.error("Use n=128..8192, samples=1..1000, trials=1..20, warmup=(0,60]")

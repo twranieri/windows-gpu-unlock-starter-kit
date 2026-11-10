@@ -113,10 +113,10 @@ function Assert-Refusal([scriptblock]$Run,[string]$Text) {
     if($message -notlike $Text){throw "Expected refusal $Text. Got: $message"}
 }
 
-foreach($action in @('FixFastStartup','DisableEncryption','FormatUsb')){Invoke-PrepTest $action $false}
+foreach($action in @('FixFastStartup','DisableEncryption','FormatUsb','FixBenchmarkRuntime')){Invoke-PrepTest $action $false}
 if($script:FastWrites -or $script:DecryptWrites -or $script:FormatWrites){throw 'Preview performed a write.'}
 $script:Admin=$false
-foreach($action in @('FixFastStartup','DisableEncryption','FormatUsb')){
+foreach($action in @('FixFastStartup','DisableEncryption','FormatUsb','FixBenchmarkRuntime')){
     Assert-Refusal {Invoke-PrepTest $action $true} '*requires administrator*'
 }
 $script:Admin=$true

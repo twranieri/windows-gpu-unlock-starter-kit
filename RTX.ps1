@@ -2,7 +2,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Check','Status','Build','Prepare','Probe','StageUnlock','RestoreProbe','FixFastStartup','DisableEncryption','FormatUsb')][string]$Action='Check',
+    [ValidateSet('Check','Status','Build','Prepare','Probe','StageUnlock','RestoreProbe','FixFastStartup','DisableEncryption','FormatUsb','FixBenchmarkRuntime')][string]$Action='Check',
     [ValidatePattern('^[D-Zd-z]$')][string]$Drive,
     [string]$VolumeId,
     [string]$WorkDirectory,
@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference='Stop'
-if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.10') {
+if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.11') {
     throw 'Setup executable and scripts are from different builds. Extract the whole matching ZIP into a new local folder and open Setup there.'
 }
 if(!$WorkDirectory){$WorkDirectory=Join-Path $PSScriptRoot '.local/rtx'}
@@ -212,13 +212,18 @@ function Invoke-RtxKit([string]$KitRoot,[string]$SelectedAction,[string]$Letter,
         Get-RtxKitStatus $KitRoot $Letter $Work $UseDesktopWork | ConvertTo-Json -Depth 6
         return
     }
-    if($SelectedAction -in @('FixFastStartup','DisableEncryption','FormatUsb')) {
+    if($SelectedAction -in @('FixFastStartup','DisableEncryption','FormatUsb','FixBenchmarkRuntime')) {
         if(!$DoExecute){Write-Host "Plan only. Add -Execute to perform $SelectedAction.";return}
         if(!(Test-RtxAdministrator)){throw 'This Windows preparation action requires administrator PowerShell.'}
         switch($SelectedAction) {
             'FixFastStartup' {Disable-RtxFastStartup}
             'DisableEncryption' {Start-RtxSystemDriveDecryption}
             'FormatUsb' {Format-RtxUsb $Letter $ExpectedVolume}
+            'FixBenchmarkRuntime' {
+                if(!$UseDesktopWork){throw 'Use Windows GPU Unlock Setup to install benchmark prerequisites.'}
+                . (Join-Path $KitRoot 'desktop/BenchmarkPrerequisite.ps1')
+                Install-RtxBenchmarkPrerequisite
+            }
         }
         return
     }

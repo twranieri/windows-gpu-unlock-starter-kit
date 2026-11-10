@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.10")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.11")]
 
 namespace RtxSetup
 {
@@ -88,6 +88,8 @@ namespace RtxSetup
         public string ResultsDirectory { get; set; }
         public string BootId { get; set; }
         public bool HasComparisonForBoot { get; set; }
+        public bool CanProvision { get; set; }
+        public string ProvisionMessage { get; set; }
         public MeasureCard[] Cards { get; set; }
     }
 
@@ -134,6 +136,7 @@ namespace RtxSetup
         private const string ResumeOptionText = "Reopen Setup at next sign-in after a setup change";
         private static readonly string BuildVersion = typeof(SetupWindow).Assembly.GetName().Version.ToString();
         private const string BuildMismatch = "Setup executable and scripts are from different builds.";
+        private const string BenchmarkDownload = "If Setup cannot find a CUDA Python environment, it downloads about 2.7 GB to set up a private one and installs the Microsoft Visual C++ runtime if needed.";
         private readonly CheckBox reopen = new CheckBox
         {
             Text = ResumeOptionText,
@@ -565,13 +568,13 @@ namespace RtxSetup
                 case "Prepare":
                     prompt = "Prepare the read-only probe on " + usb + "? Use a dedicated, backed-up USB drive.";
                     if (automaticBenchmarks.Checked)
-                        prompt += "\r\n\r\nIf a stock baseline is needed, Setup will then run a tensor test that loads the GPUs. For stock measurements, start Windows Boot Manager directly after a full shutdown. Close games and other GPU-heavy apps before continuing.";
+                        prompt += "\r\n\r\n" + BenchmarkDownload + " Setup then runs any needed stock tensor tests. Use a normal Windows Boot Manager boot and close GPU-heavy apps first.";
                     break;
                 case "StageUnlock":
                     prompt = "Did the USB probe return to Windows on its own? If it did, click OK to stage the unlock on " + usb +
                         ". At the next USB boot, Space or Enter confirms the unlock for the listed GPUs.";
                     if (automaticBenchmarks.Checked)
-                        prompt += "\r\n\r\nSetup will run any missing stock tensor tests before staging. If a baseline is missing, fully shut down, start Windows Boot Manager directly, and return to Setup. Close other GPU-heavy apps before the test.";
+                        prompt += "\r\n\r\n" + BenchmarkDownload + " Setup runs any missing stock tensor tests before staging. Use a normal Windows Boot Manager boot and close GPU-heavy apps first.";
                     break;
                 default:
                     prompt = "Restore the verified read-only probe on " + usb + "? This clears the old USB boot log. Save a copy first if you need it.";
@@ -1110,12 +1113,20 @@ namespace RtxSetup
         {
             using (var dialog = new BenchmarkWindow((action, python, gpu) => RunMeasure(action, python, gpu, usb),
                 (step, detail, notify) => OpenDiagnostics(step, detail, usb, true, notify),
-                benchmarkPython, initial, automaticAction))
+                EnsureBenchmarkPrerequisite, benchmarkPython, initial, automaticAction))
             {
                 dialog.ShowDialog(this);
                 benchmarkPython = dialog.PythonSelection;
                 return dialog.Measurement;
             }
+        }
+
+        private async Task EnsureBenchmarkPrerequisite()
+        {
+            var result = await RunBackend("FixBenchmarkRuntime", null, null);
+            if (result.ExitCode != 0)
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.Error)
+                    ? "Setup could not verify the Microsoft Visual C++ runtime." : result.Error.Trim());
         }
 
         private async Task<bool> RunAutomaticBenchmark(string action, UsbDrive usb, bool explicitRetry = false)
@@ -1126,9 +1137,10 @@ namespace RtxSetup
             {
                 var status = ParseMeasureStatus(await RunMeasure("Status", benchmarkPython, null, usb));
                 if (action == "Stock" && HasStockForAll(status)) return true;
-                if (!CanMeasure(status, action, true) || string.IsNullOrWhiteSpace(status.BootId))
+                bool needsRuntime = action == "Stock" && status.CanProvision && string.IsNullOrWhiteSpace(status.Python);
+                if ((!needsRuntime && !CanMeasure(status, action, true)) || string.IsNullOrWhiteSpace(status.BootId))
                 {
-                    if (action == "Stock" && !string.IsNullOrWhiteSpace(status.Message)) Append(status.Message);
+                    if (action == "Stock") Append(status.ProvisionMessage ?? status.Message);
                     return action != "Stock";
                 }
                 if (!automaticRuns.Add(action + ":" + status.BootId) && !explicitRetry) return false;
@@ -1151,6 +1163,7 @@ namespace RtxSetup
         {
             private readonly Func<string, string, string, Task<BackendResult>> run;
             private readonly Func<string, string, Action<string>, Task> reportFailure;
+            private readonly Func<Task> prepareRuntime;
             private readonly string automaticAction;
             private readonly Label statusLabel = new Label();
             private readonly Label pythonLabel = new Label();
@@ -1158,6 +1171,7 @@ namespace RtxSetup
             private readonly TextBox activity = new TextBox();
             private readonly Button stock = MakeButton("Run stock test", true);
             private readonly Button unlocked = MakeButton("Run unlocked test", true);
+            private readonly Button setupRuntime = MakeButton("Set up benchmarks", true);
             private readonly Button browse = MakeButton("Choose Python", false);
             private readonly Button refresh = MakeButton("Refresh", false);
             private readonly Button folder = MakeButton("Open results folder", false);
@@ -1167,11 +1181,12 @@ namespace RtxSetup
             public MeasureStatus Measurement { get; private set; }
 
             public BenchmarkWindow(Func<string, string, string, Task<BackendResult>> run,
-                Func<string, string, Action<string>, Task> reportFailure, string python,
+                Func<string, string, Action<string>, Task> reportFailure, Func<Task> prepareRuntime, string python,
                 MeasureStatus initial, string automaticAction)
             {
                 this.run = run;
                 this.reportFailure = reportFailure;
+                this.prepareRuntime = prepareRuntime;
                 this.automaticAction = automaticAction;
                 PythonSelection = python;
                 Measurement = initial;
@@ -1194,7 +1209,7 @@ namespace RtxSetup
 
                 var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true };
                 var help = MakeButton("Python help", false);
-                controls.Controls.AddRange(new Control[] { stock, unlocked, browse, refresh, folder, help });
+                controls.Controls.AddRange(new Control[] { setupRuntime, stock, unlocked, browse, refresh, folder, help });
                 content.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
                 content.Controls.Add(controls);
                 help.Click += delegate
@@ -1237,6 +1252,7 @@ namespace RtxSetup
 
                 stock.Click += async delegate { await RunTest("Stock", false); };
                 unlocked.Click += async delegate { await RunTest("Unlocked", false); };
+                setupRuntime.Click += async delegate { await SetUpRuntime(false); };
                 refresh.Click += async delegate { await Check(); };
                 browse.Click += async delegate
                 {
@@ -1263,6 +1279,8 @@ namespace RtxSetup
             {
                 base.OnShown(e);
                 if (automaticAction == null) await Check();
+                else if (automaticAction == "Stock" && Measurement != null && Measurement.CanProvision && string.IsNullOrWhiteSpace(Measurement.Python))
+                    await SetUpRuntime(true);
                 else await RunTest(automaticAction, true);
             }
 
@@ -1270,9 +1288,10 @@ namespace RtxSetup
             {
                 var status = Measurement;
                 statusLabel.Text = status == null ? "Checking benchmark prerequisites..." : status.Message;
-                pythonLabel.Text = status == null || string.IsNullOrWhiteSpace(status.Python)
-                    ? "Choose a Python environment with CUDA-enabled PyTorch if automatic detection fails."
-                    : "Python: " + status.Python;
+                pythonLabel.Text = status == null ? "Looking for CUDA-enabled Python..." :
+                    !string.IsNullOrWhiteSpace(status.Python) ? "Python: " + status.Python :
+                    status.CanProvision ? "Click Set up benchmarks to install a private benchmark environment." :
+                    status.ProvisionMessage ?? "Choose Python to use an existing CUDA PyTorch environment.";
                 results.BeginUpdate();
                 results.Items.Clear();
                 if (status != null)
@@ -1305,9 +1324,43 @@ namespace RtxSetup
                 var selected = SelectedMeasureCard();
                 unlocked.Enabled = !working && (selected == null ? CanMeasure(Measurement, "Unlocked", false) : CanMeasureUnlockedCard(selected));
                 unlocked.Text = selected == null ? "Run unlocked test" : "Run unlocked on selected GPU";
+                setupRuntime.Enabled = !working && Measurement != null && Measurement.CanProvision;
                 browse.Enabled = refresh.Enabled = !working;
                 folder.Enabled = !working && Measurement != null && Directory.Exists(Measurement.ResultsDirectory);
                 UseWaitCursor = working;
+            }
+
+            private async Task SetUpRuntime(bool automatic)
+            {
+                if (working || Measurement == null || !Measurement.CanProvision) return;
+                if (!automatic && MessageBox.Show(this,
+                    "Set up private Python, pip and CUDA PyTorch, then run the stock tensor test? Setup downloads about 2.7 GB and installs the Microsoft Visual C++ runtime if needed. Close GPU-heavy apps and use a normal Windows Boot Manager boot.",
+                    Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
+                working = true;
+                UpdateMeasureButtons();
+                statusLabel.Text = "Setting up the benchmark environment. Keep this window open during the download and installation.";
+                string failure = null;
+                try
+                {
+                    await prepareRuntime();
+                    var response = await run("Provision", null, null);
+                    AppendActivity(response.Error);
+                    var provisioned = ParseMeasureStatus(response);
+                    if (string.IsNullOrWhiteSpace(provisioned.Python))
+                        throw new InvalidOperationException("Setup could not verify the benchmark Python environment.");
+                    PythonSelection = provisioned.Python;
+                    Measurement = provisioned;
+                    Display();
+                }
+                catch (Exception error)
+                {
+                    failure = error.Message;
+                    statusLabel.Text = error.Message;
+                    AppendActivity(error.Message);
+                }
+                try { if (failure != null) await reportFailure("Set up tensor benchmarks", failure, AppendActivity); }
+                finally { working = false; UpdateMeasureButtons(); }
+                if (failure == null) await RunTest("Stock", true);
             }
 
             private MeasureCard SelectedMeasureCard()

@@ -16,6 +16,7 @@ FILES = (
     "rtx/Build.ps1", "rtx/Inventory.ps1", "rtx/Media.ps1", "rtx/WindowsPrep.ps1", "rtx/engine.json", "rtx/engine.patch",
     "desktop/BUILD.md", "desktop/Build-Desktop.ps1", "desktop/Setup.cs", "desktop/Resume.cs",
     "desktop/UserProcess.cs", "desktop/Measure.ps1", "desktop/SetupDiagnostics.cs", "desktop/Diagnostics.ps1",
+    "desktop/BenchmarkRuntime.ps1", "desktop/BenchmarkPrerequisite.ps1", "desktop/benchmark-requirements.txt",
     "desktop/Setup.manifest", "desktop/package.py",
     "docs/RTX30-40.md", "docs/COMPARISON.md", "docs/COMPATIBILITY.md", "docs/QUICKSTART.md",
     "docs/ORIGINATING-RESULTS.md", "experimental/dual-gpu/README.md",
@@ -23,6 +24,7 @@ FILES = (
     "experimental/dual-gpu/upstream.patch", "tests/test_rtx_inventory.ps1",
     "tests/test_rtx_media.ps1", "tests/test_rtx_runner.ps1", "tests/test_rtx_windows_prep.ps1",
     "tests/test_rtx_measure.ps1", "tests/test_rtx_diagnostics.ps1",
+    "tests/test_benchmark_runtime.ps1", "tests/test_benchmark_prerequisite.ps1",
 )
 PRIVATE = tuple(value.lower().encode(encoding)
                 for value in (str(Path.home()), Path.home().as_posix())
@@ -71,8 +73,17 @@ def archive_engine(source, engine):
             raise ValueError(f"Corresponding source differs at {item['Path']}")
     for required in ("Cargo.lock", "LICENSE", "loader/build.rs", "assets/Cargo.toml", ".cargo/config.toml"):
         read(source, required)
-    if not (source / "vendor").is_dir() or not list((source / "vendor").glob("*/.cargo-checksum.json")):
+    vendor_checksums = sorted((source / "vendor").glob("*/.cargo-checksum.json"))
+    if not vendor_checksums:
         raise ValueError("Missing vendored Rust dependencies")
+    for manifest in vendor_checksums:
+        files = json.loads(read(source, manifest.relative_to(source).as_posix())).get("files")
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"Missing vendored file list for {manifest.parent.name}")
+        for name, expected in files.items():
+            relative = (manifest.parent / name).relative_to(source).as_posix()
+            if digest(read(source, relative)) != expected:
+                raise ValueError(f"Vendored Rust dependency differs at {relative}")
     output = io.BytesIO()
     with ZipFile(output, "w") as archive:
         for path in sorted(source.rglob("*")):

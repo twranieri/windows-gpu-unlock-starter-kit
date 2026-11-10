@@ -2,7 +2,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Status','Stock','Unlocked')][string]$Action='Status',
+    [ValidateSet('Status','Provision','Stock','Unlocked')][string]$Action='Status',
     [string]$Python,
     [string]$Gpu,
     [ValidatePattern('^[D-Zd-z]$')][string]$Drive,
@@ -13,6 +13,7 @@ param(
 $script:RtxMeasureKit = Split-Path -Parent $PSScriptRoot
 $script:RtxMeasureSettings = @('name','pci.bus_id','driver_version','vbios_version',
     'power.limit','power.default_limit','clocks.max.sm','clocks.max.memory','uuid')
+. (Join-Path $PSScriptRoot 'BenchmarkRuntime.ps1')
 
 function ConvertTo-RtxMeasureBdf([string]$Address) {
     if($Address -notmatch '\A(?:0000)?(?<short>[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.0)\z'){
@@ -132,9 +133,14 @@ function Test-RtxMeasureSettings($Saved,$Live) {
 
 function Resolve-RtxMeasurePython([string]$Requested,$Stock) {
     if($Requested -and ![IO.Path]::IsPathRooted($Requested)){throw 'Select an absolute python.exe path.'}
+    $stockPaths=@($Stock | ForEach-Object {$_.Record.Python} | Select-Object -Unique)
+    $managed=Get-RtxManagedBenchmarkPython
+    $runtimeRoot=Get-RtxBenchmarkRuntimeRoot
+    $runtimePrefix=if($runtimeRoot){[IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar}
     $candidates=if($Requested){@($Requested)}else{
         @(
-            $Stock | ForEach-Object {$_.Record.Python} | Select-Object -Unique
+            $stockPaths
+            $managed
             $drives=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -Property DeviceID -ErrorAction SilentlyContinue
             $locations=@($drives | ForEach-Object {$_.DeviceID+'\'})
             if($env:USERPROFILE){$locations+=Join-Path $env:USERPROFILE 'Downloads'}
@@ -163,7 +169,12 @@ function Resolve-RtxMeasurePython([string]$Requested,$Stock) {
         $item=Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
         if(!$item -or $item.PSIsContainer -or $item.Name -ine 'python.exe' -or !$item.Length -or
            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){continue}
-        if($Requested -or $item.FullName -in @($Stock | ForEach-Object {$_.Record.Python})){return $item.FullName}
+        $verifiedManaged=[string]::Equals($item.FullName,$managed,[StringComparison]::OrdinalIgnoreCase)
+        if($runtimePrefix -and $item.FullName.StartsWith($runtimePrefix,[StringComparison]::OrdinalIgnoreCase) -and !$verifiedManaged){
+            if($Requested){throw 'The managed benchmark runtime is not verified. Run setup again or choose an external Python interpreter.'}
+            continue
+        }
+        if($Requested -or $verifiedManaged -or $item.FullName -in $stockPaths){return $item.FullName}
         $pythonHome=if($item.Directory.Name -ieq 'Scripts'){$item.Directory.Parent.FullName}else{$item.DirectoryName}
         $torchLib=Join-Path $pythonHome 'Lib/site-packages/torch/lib'
         if((Test-Path -LiteralPath (Join-Path $torchLib 'torch_cuda.dll') -PathType Leaf) -and
@@ -202,6 +213,17 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
     $bootId=$boot.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
     $evidence=Get-RtxBenchmarkBootEvidence $SelectedDrive $SelectedVolume $targets
     if($evidence.Confirmed -and $evidence.BootId -cne $bootId){throw 'The Windows boot changed during verification.'}
+    $provisionBlock=if($evidence.Confirmed){'Start Windows directly through Windows Boot Manager before installing the benchmark runtime.'}
+        elseif(Test-RtxAdministrator){'Install the benchmark runtime from the signed-in desktop without administrator privileges.'}
+        else{
+            foreach($card in $targets){
+                $driver=$null
+                if(![version]::TryParse([string]$snapshots[$card.Bdf].driver_version,[ref]$driver) -or $driver -lt [version]'561.17'){
+                    'The benchmark runtime requires NVIDIA driver 561.17 or later for every GPU.'
+                    break
+                }
+            }
+        }
     $root=Get-RtxMeasureRoot
     $history=@(Get-RtxMeasureHistory $root)
     $bench=Join-Path $script:RtxMeasureKit 'benchmark-tensors.py'
@@ -224,6 +246,11 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
             break
         }
     }
+    if($Mode -eq 'Provision' -and $DoExecute){
+        if($provisionBlock){throw $provisionBlock}
+        $RequestedPython=Initialize-RtxBenchmarkRuntime -GpuAddresses @($targets.Bdf)
+        if(!$RequestedPython){throw 'Setup could not verify the installed benchmark runtime.'}
+    }
     $exe=Resolve-RtxMeasurePython $RequestedPython @($stock.Values)
     $exeHash=if($exe){(Get-FileHash -LiteralPath $exe).Hash}
     $logUsedBefore=$evidence.Confirmed -and @($history | Where-Object {
@@ -231,7 +258,9 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
     }).Count -gt 0
     $cards=@(foreach($card in $targets) {
         $saved=$stock[$card.Bdf]
-        $hasStock=$null -ne $saved -and $exeHash -and $saved.Data.python.executable.sha256 -ieq $exeHash
+        $hasStock=$null -ne $saved -and $exeHash -and
+            [string]::Equals([string]$saved.Record.Python,$exe,[StringComparison]::OrdinalIgnoreCase) -and
+            $saved.Data.python.executable.sha256 -ieq $exeHash
         $result=$null
         if($hasStock -and $evidence.Confirmed -and !$logUsedBefore) {
             foreach($run in @($history | Where-Object {
@@ -261,11 +290,19 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
         }
     })
     $status=[ordered]@{
-        Status='Ready';Message=$evidence.Message;Python=$exe;ResultsDirectory=$root;BootId=$bootId
+        Status='Ready';Message=if($exe){$evidence.Message}else{'Choose a Python environment with CUDA PyTorch, or install the benchmark runtime.'}
+        Python=$exe;ResultsDirectory=$root;BootId=$bootId
         BootConfirmed=[bool]$evidence.Confirmed;Cards=$cards;Results=@()
         HasComparisonForBoot=@($cards | Where-Object HasComparisonForBoot).Count -eq $cards.Count
+        CanProvision=!$provisionBlock
+        ProvisionMessage=if($provisionBlock){$provisionBlock}else{'Install a private CUDA PyTorch runtime for benchmarks. The first download is about 2.6 GB.'}
     }
     if($Mode -eq 'Status'){return [pscustomobject]$status}
+    if($Mode -eq 'Provision'){
+        if(!$DoExecute){$status.Status='Plan';$status.Message='Add -Execute to install the benchmark runtime.'}
+        else{$status.Message='Benchmark runtime ready. Run the stock test from a normal Windows boot.'}
+        return [pscustomobject]$status
+    }
     if(!$DoExecute){$status.Status='Plan';$status.Message='Add -Execute to start a tensor benchmark.';return [pscustomobject]$status}
     $selected=if($RequestedGpu){@($cards | Where-Object Bdf -CEQ (ConvertTo-RtxMeasureBdf $RequestedGpu))}else{$cards}
     if(!@($selected).Count){throw 'The selected GPU is not in the current Windows inventory.'}
@@ -397,7 +434,8 @@ if($MyInvocation.InvocationName -ne '.'){
         Invoke-RtxDesktopMeasure $Action $Python $Gpu $Drive $VolumeId ([bool]$Execute) | ConvertTo-Json -Depth 12
     } catch {
         [pscustomobject]@{Status='Blocked';Message=$_.Exception.Message;Python=$null;ResultsDirectory=$null
-            BootId=$null;BootConfirmed=$false;HasComparisonForBoot=$false;Cards=@();Results=@()} | ConvertTo-Json -Depth 4
+            BootId=$null;BootConfirmed=$false;HasComparisonForBoot=$false;Cards=@();Results=@()
+            CanProvision=$false;ProvisionMessage=$_.Exception.Message} | ConvertTo-Json -Depth 4
         exit 1
     } finally {
         if($locked){$mutex.ReleaseMutex()}

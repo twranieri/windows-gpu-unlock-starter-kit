@@ -1,5 +1,11 @@
 # Changes
 
+## 0.4.0-preview.11 — 2026-11-10
+
+- Set up private Python, pip and CUDA PyTorch when automatic stock tests need a benchmark environment on a fresh Windows install.
+- Offer **Set up benchmarks** to install and verify the runtime and run the stock test from the benchmark window. Setup uses the matching environment for the unlocked test.
+- Verify the Microsoft Visual C++ x64 runtime and install it when the private CUDA environment needs it.
+
 ## 0.4.0-preview.10 — 2026-11-10
 
 - Offer verified USB formatting first when the remaining Windows settings can be corrected in Setup.

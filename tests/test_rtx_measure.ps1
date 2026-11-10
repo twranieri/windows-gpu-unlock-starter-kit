@@ -11,18 +11,27 @@ $script:confirmed=$false
 $script:logId='initial'
 $script:simulatedFailure=$null
 $script:benchCalls=0
+$script:provisionCalls=0
+$script:runtimeInstalled=$false
+$script:admin=$false
 $script:driver='621.14'
+$script:secondDriver=$null
 $script:memoryTotal='10240'
 $script:targets=@(
     [pscustomobject]@{Bdf='0000:01:00.0';Device='2206';Subsystem='40611458';Label='RTX 3080'},
     [pscustomobject]@{Bdf='0000:02:00.0';Device='2783';Subsystem='40e81458';Label='RTX 4070 SUPER'}
 )
 $script:pythonPath=Join-Path $testRoot 'python.exe'
+$privateRuntime=Join-Path $testRoot 'bench-runtime-v1'
+[void][IO.Directory]::CreateDirectory($privateRuntime)
+$script:managedPython=Join-Path $privateRuntime 'python.exe'
 foreach($file in @('python.exe','benchmark-tensors.py','compare-tensors.py')){
     [IO.File]::WriteAllText((Join-Path $testRoot $file),$file)
 }
+[IO.File]::Copy($script:pythonPath,$script:managedPython)
 [IO.File]::WriteAllText((Join-Path $testRoot 'RTX.ps1'),@'
 function Get-RtxInventory {$script:targets}
+function Test-RtxAdministrator {$script:admin}
 function Get-RtxBenchmarkBootEvidence($Letter,$Volume,$Targets) {
     [pscustomobject]@{Confirmed=$script:confirmed;BootId=[string]$script:boot.Ticks;LogId=$script:logId;Message='Synthetic boot evidence'}
 }
@@ -30,12 +39,20 @@ function Get-RtxBenchmarkBootEvidence($Letter,$Volume,$Targets) {
 
 function Get-CimInstance { param($ClassName,$Property) [pscustomobject]@{LastBootUpTime=$script:boot} }
 function Get-RtxMeasureRoot { $script:resultsRoot }
+function Get-RtxBenchmarkRuntimeRoot {$privateRuntime}
+function Get-RtxManagedBenchmarkPython {if($script:runtimeInstalled){$script:managedPython}}
+function Initialize-RtxBenchmarkRuntime([string[]]$GpuAddresses) {
+    if(($GpuAddresses -join ',') -cne '0000:01:00.0,0000:02:00.0'){throw 'Provision did not bind the exact GPU set.'}
+    if(!$script:runtimeInstalled){$script:provisionCalls++;$script:runtimeInstalled=$true}
+    return $script:managedPython
+}
 function Get-RtxMeasureSnapshots($Targets) {
     $snapshots=@{}
     foreach($card in $Targets){
         $snapshots[$card.Bdf]=[pscustomobject]@{
             'pci.bus_id'='0000'+$card.Bdf;uuid='GPU-12345678-aaaa-bbbb-cccc-1234567890'+$card.Device.Substring(2)
-            name=$card.Label;driver_version=$script:driver;vbios_version='94.02.00.00.00'
+            name=$card.Label;driver_version=if($script:secondDriver -and $card.Bdf -eq $Targets[1].Bdf){$script:secondDriver}else{$script:driver}
+            vbios_version='94.02.00.00.00'
             'memory.total'=$script:memoryTotal;'power.limit'='350.00';'power.default_limit'='350.00';'clocks.max.sm'='2100';'clocks.max.memory'='9751'
         }
     }
@@ -70,7 +87,36 @@ function Run-Measure([string]$Mode,[bool]$Run=$false,[string]$Gpu=''){
 
 try {
     $status=Run-Measure Status
-    Assert-Measure ($status.Cards.Count -eq 2 -and !$status.Cards[0].HasStock -and !(Test-Path $script:resultsRoot)) 'Status must be read-only.'
+    Assert-Measure ($status.Cards.Count -eq 2 -and !$status.Cards[0].HasStock -and $status.CanProvision -and
+        !$script:provisionCalls -and !(Test-Path $script:resultsRoot)) 'Status must be read-only and report provision eligibility.'
+    $plan=Run-Measure Provision
+    Assert-Measure ($plan.Status -ceq 'Plan' -and !$script:provisionCalls) 'Provision plan downloaded or installed a runtime.'
+    foreach($invalidDriver in @('561.16','[N/A]')) {
+        $script:secondDriver=$invalidDriver
+        $status=Run-Measure Status
+        Assert-Measure (!$status.CanProvision -and $status.ProvisionMessage -match '561\.17') 'One unsupported driver did not block provisioning.'
+        $refused=$false
+        try {$null=Run-Measure Provision $true} catch {$refused=$_.Exception.Message -match '561\.17'}
+        Assert-Measure ($refused -and !$script:provisionCalls) 'Unsupported driver reached runtime initialization.'
+    }
+    $script:secondDriver='561.17'
+    $script:admin=$true
+    $refused=$false
+    try {$null=Run-Measure Provision $true} catch {$refused=$_.Exception.Message -match 'without administrator'}
+    Assert-Measure ($refused -and !$script:provisionCalls) 'Elevated provisioning was accepted.'
+    $script:admin=$false
+    $installed=Run-Measure Provision $true
+    Assert-Measure ($installed.Status -ceq 'Ready' -and $installed.Python -ceq $script:managedPython -and
+        $script:provisionCalls -eq 1 -and !$script:benchCalls -and !(Test-Path $script:resultsRoot)) 'Provision did not return the runtime without measuring.'
+    $installed=Run-Measure Provision $true
+    Assert-Measure ($installed.Python -ceq $script:managedPython -and $script:provisionCalls -eq 1) 'A second request did not reuse the installed runtime.'
+    $script:runtimeInstalled=$false
+    $refused=$false
+    try {$null=Invoke-RtxDesktopMeasure Status $script:managedPython '' 'E' 'synthetic-id' $false}
+    catch {$refused=$_.Exception.Message -match 'managed benchmark runtime'}
+    Assert-Measure $refused 'An explicit managed Python path bypassed the ready receipt.'
+    $script:runtimeInstalled=$true
+    $script:secondDriver=$null
     $result=Run-Measure Stock $true
     Assert-Measure ($result.Status -ceq 'Complete' -and $result.Results.Count -eq 2 -and $script:benchCalls -eq 2) 'Stock run did not publish both cards.'
     foreach($card in $result.Results){Assert-Measure (Test-Path -LiteralPath $card.StockPath) 'Stock file missing.'}
@@ -82,7 +128,13 @@ try {
     $script:logId='verified-log'
     $script:memoryTotal='[N/A]'
     $status=Run-Measure Status
-    Assert-Measure ($status.Cards[0].CanUnlocked -and $status.Cards[1].CanUnlocked) 'Fresh boot with unavailable driver VRAM telemetry did not match both stock results.'
+    Assert-Measure (!$status.CanProvision -and $status.Cards[0].CanUnlocked -and $status.Cards[1].CanUnlocked) 'Fresh boot with unavailable driver VRAM telemetry did not match both stock results or refuse install.'
+    $refused=$false
+    try {$null=Run-Measure Provision $true} catch {$refused=$_.Exception.Message -match 'Windows Boot Manager'}
+    Assert-Measure ($refused -and $script:provisionCalls -eq 1) 'Verified unlock boot allowed provisioning.'
+    $sameBytes=Invoke-RtxDesktopMeasure Status $script:managedPython '' 'E' 'synthetic-id' $false
+    Assert-Measure (!$sameBytes.Cards[0].HasStock -and !$sameBytes.Cards[0].CanUnlocked -and
+        !$sameBytes.Cards[1].HasStock) 'An identical Python executable at a different path reused the stock result.'
     $script:simulatedFailure=$script:targets[1].Bdf
     $failed=$false
     try { $null=Run-Measure Unlocked $true } catch { $failed=$_.Exception.Message -eq 'Simulated second-card failure' }
@@ -103,7 +155,7 @@ try {
     $script:driver='622.01'
     $changed=Run-Measure Status
     Assert-Measure (!$changed.Cards[0].HasStock -and !$changed.Cards[0].CanUnlocked) 'A changed driver reused stock measurements.'
-    'PASS desktop benchmark runner: two-card stock, atomic retry, fresh EFI evidence, deduplication and changed settings.'
+    'PASS desktop benchmark runner: guarded provisioning, exact interpreter, two-card stock, atomic retry, fresh EFI evidence, deduplication and changed settings.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($testRoot)
     $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
