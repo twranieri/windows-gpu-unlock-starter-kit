@@ -1,3 +1,17 @@
+Starter Kit 0.4.0 desktop preview, build 13, 2026-11-10
+
+- Windows PowerShell fixtures passed 5,452 inventory checks, including every
+  one of the 5,329 ordered pairs of the 73 cataloged PCI IDs. This verifies
+  Windows inventory matching and asset-family selection.
+- Desktop fixtures passed the standard-user Explorer launch and all seven
+  stock benchmark gate cases: success, retries, Back, dismissal and explicit
+  continuation without comparison. Media, runner, diagnostics and paired
+  measurement fixtures passed, including rejection of out-of-order,
+  contradictory and partial EFI handoff evidence.
+- The packaged EFI, asset tool and engine source match the public Preview 12
+  package byte for byte. Physical desktop and laptop qualification of this
+  workflow across the catalog is pending.
+
 Starter Kit 0.4.0 desktop preview, build 12, 2026-11-10
 
 - Exercised the ordinary launcher and actual Explorer handoff on a signed-in

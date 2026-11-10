@@ -64,6 +64,7 @@ try {
     Assert-Refused {Publish-RtxUnlock $usb $package $receipt} 'Missing probe boot authorized staging.'
     $log=Join-Path $usb 'loader.log'
     $handoff='CHAIN: StartImage -> handing control to the OS loader'
+    $preloaded="[9ms] INFO : loader::chainload: CHAIN-PRE: start-time PE header probe ok - StartImage the preloaded '\EFI\Microsoft\Boot\bootmgfw.efi'"
     [IO.File]::WriteAllText($log,'')
     $empty=Assert-Outcome 'ProbeStaged' 'Probe log is empty' $true $receipt
     if(!$empty.Failed){throw 'An empty probe log must trigger a failure report.'}
@@ -94,6 +95,9 @@ try {
     [IO.File]::WriteAllText($log,"$handoff`n$probeLine`n")
     $null=Assert-Outcome 'ProbeStaged' 'Probe handoff unconfirmed' $true $receipt
     Assert-Refused {Publish-RtxUnlock $usb $package $receipt} 'Handoff preceding the probe authorized staging.'
+    [IO.File]::WriteAllText($log,"$probeLine`n[2ms] INFO : loader::chainload: note about $handoff`n")
+    $null=Assert-Outcome 'ProbeStaged' 'Probe handoff unconfirmed' $true $receipt
+    Assert-Refused {Publish-RtxUnlock $usb $package $receipt} 'A mention of the handoff authorized staging.'
     [IO.File]::WriteAllText($log,"$probeLine`n$handoff`nCHAIN: failed: EFI_DEVICE_ERROR`n")
     $null=Assert-Outcome 'ProbeStaged' 'Probe handoff failed' $true $receipt
     Assert-Refused {Publish-RtxUnlock $usb $package $receipt} 'An explicit handoff failure authorized staging.'
@@ -157,6 +161,31 @@ try {
     $full=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
     if($full.Failed){throw 'A complete unlock and handoff must not trigger a failure report.'}
     if(!$full.CompleteHandoff){throw 'Completed target results and handoff were not exposed as typed evidence.'}
+    $fullTransaction="$txLine`n$target1`n$complete`n$target2`n$complete"
+    foreach($marker in @($preloaded,'CHAIN-PRE: start-time PE header probe ok - StartImage')) {
+        [IO.File]::WriteAllText($log,("$fullTransaction`n$marker`n").Replace("`n","`r`n"))
+        $result=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
+        if(!$result.CompleteHandoff -or $result.Failed){throw 'A valid preloaded handoff did not verify completed transactions.'}
+    }
+    foreach($record in @(
+        "$handoff`n$fullTransaction`n$preloaded",
+        "$txLine`n$handoff`n$target1`n$complete`n$target2`n$complete",
+        "$txLine`n$target1`n$complete`n$target2`n$handoff`n$complete`n$preloaded",
+        "$fullTransaction`n$handoff but did not start it",
+        "$fullTransaction`n$preloaded (quoted by another message)"
+    )) {
+        [IO.File]::WriteAllText($log,"$record`n")
+        $result=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
+        if($result.CompleteHandoff -or !$result.Failed){throw 'An out-of-order or malformed handoff verified completed transactions.'}
+    }
+    foreach($reason in @(
+        'KIT: incomplete ga102 assets; no card was touched',
+        'KIT: a target changed or D0 could not be confirmed; no card was touched'
+    )) {
+        [IO.File]::WriteAllText($log,"$fullTransaction`n[8ms] INFO : loader: $reason`n$preloaded`n")
+        $result=Assert-Outcome 'UnlockStaged' 'Unlock result does not match' $true $receipt
+        if($result.CompleteHandoff -or !$result.Failed){throw 'A no-write refusal verified completed transactions.'}
+    }
     [IO.File]::WriteAllText($log,"$txLine`n$target1`n$complete`n$target2`n$complete`n")
     $withoutHandoff=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
     if(!$withoutHandoff.Failed){throw 'An unconfirmed handoff must trigger a failure report.'}

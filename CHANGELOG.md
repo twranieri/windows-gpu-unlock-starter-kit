@@ -1,5 +1,12 @@
 # Changes
 
+## 0.4.0-preview.13 — 2026-11-10
+
+- Label the first USB boot as read-only and the second as unlock. Setup shows the next action from the recorded boot result.
+- If a stock benchmark is missing, retry it, continue without that comparison, or return to Setup. Continuing applies only to the current attempt.
+- Verify that the log shows all target completions before the Windows handoff. A partial or contradictory result does not count as a completed boot.
+- Exercise Windows inventory and firmware-family routing for every ordered pair of cataloged PCI IDs.
+
 ## 0.4.0-preview.12 — 2026-11-10
 
 - Start tensor benchmarks through the signed-in user's File Explorer and verify that the worker uses the same account without administrator privileges. Both tests continue to use the same CUDA environment for matched comparisons.

@@ -99,18 +99,55 @@ $twins = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow, $gaRow.Replace('00000000
 Assert-Inventory ($twins.Count -eq 2 -and $twins[1].Bdf -ceq '1234:02:00.0' -and
     $twins[0].Subsystem -ceq $twins[1].Subsystem) 'Identical cards or a nonzero PCI segment were lost.'
 
-foreach ($series in @(30,40)) {
-    $table = Get-Content -LiteralPath (Join-Path $PSScriptRoot "../rtx$series-pci.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($entry in $table.devices.PSObject.Properties) {
-        $device = $entry.Name
-        $family = if ($series -eq 40 -or $device -cin @('2822','28a3','28e3')) { 'ad102' } else { 'ga102' }
-        $card = ConvertTo-RtxInventory -NvidiaRows @("0000:02:00.0, 0x${device}10de, 0x12341043, [N/A]") `
-            -WindowsRows @(New-DisplayRow $device '12341043' 'one') -Catalog $catalog
-        $build = if ($family -ceq 'ad102') { '40' } else { '30' }
-        Assert-Inventory ($card.Device -ceq $device -and $card.Family -ceq $family -and $null -eq $card.MemoryMiB -and
-            (Get-RtxBuildFamilies @($card)) -ceq $build) "Device $device did not route correctly with unavailable VRAM."
+$catalogProfiles = @(
+    foreach ($series in @(30,40)) {
+        $table = Get-Content -LiteralPath (Join-Path $PSScriptRoot "../rtx$series-pci.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($entry in $table.devices.PSObject.Properties) {
+            $device = $entry.Name
+            # These RTX 3050 A Laptop variants use Ada assets despite the RTX 30 model name.
+            $family = if ($series -eq 40 -or $device -cin @('2822','28a3','28e3')) { 'ad102' } else { 'ga102' }
+            $build = if ($family -ceq 'ad102') { '40' } else { '30' }
+            $firstRow = "00000000:01:00.0, 0x${device}10de, 0x12341043, [N/A]"
+            $firstDisplay = New-DisplayRow $device '12341043' 'first'
+            $card = ConvertTo-RtxInventory -NvidiaRows @($firstRow) -WindowsRows @($firstDisplay) -Catalog $catalog
+            Assert-Inventory ($card.Device -ceq $device -and $card.Family -ceq $family -and $null -eq $card.MemoryMiB -and
+                (Get-RtxBuildFamilies @($card)) -ceq $build) "Device $device did not route correctly with unavailable VRAM."
+            [pscustomobject]@{
+                Device = $device; Label = $entry.Value.label; Series = $series; Family = $family; Build = $build
+                FirstRow = $firstRow; FirstDisplay = $firstDisplay
+                SecondRow = "00000000:04:00.0, 0x${device}10de, 0x12341043, 8192"
+                SecondDisplay = New-DisplayRow $device '12341043' 'second'
+            }
+        }
+    }
+)
+
+# Exercise both PCI orderings with reversed input rows. Shared subsystem IDs also test identical-card matching.
+$pairCount = 0
+$crossSeries = 0
+$crossFamily = 0
+$identical = 0
+foreach ($first in $catalogProfiles) {
+    foreach ($second in $catalogProfiles) {
+        $cards = @(ConvertTo-RtxInventory -NvidiaRows @($second.SecondRow, $first.FirstRow) `
+            -WindowsRows @($second.SecondDisplay, $first.FirstDisplay) -Catalog $catalog)
+        $expectedBuilds = if ($first.Build -ceq $second.Build) { $first.Build } else { $first.Build + ',' + $second.Build }
+        Assert-Inventory ($cards.Count -eq 2 -and $cards[0].Bdf -ceq '0000:01:00.0' -and $cards[1].Bdf -ceq '0000:04:00.0' -and
+            $cards[0].Device -ceq $first.Device -and $cards[1].Device -ceq $second.Device -and
+            $cards[0].Subsystem -ceq '12341043' -and $cards[1].Subsystem -ceq '12341043' -and
+            $cards[0].Label -ceq $first.Label -and $cards[1].Label -ceq $second.Label -and
+            $cards[0].Family -ceq $first.Family -and $cards[1].Family -ceq $second.Family -and
+            $null -eq $cards[0].MemoryMiB -and $cards[1].MemoryMiB -eq 8192 -and
+            ((Get-RtxBuildFamilies $cards) -join ',') -ceq $expectedBuilds) `
+            "Wrong paired inventory or asset selection for $($first.Device) and $($second.Device)."
+        $pairCount++
+        if ($first.Series -ne $second.Series) { $crossSeries++ }
+        if ($first.Family -cne $second.Family) { $crossFamily++ }
+        if ($first.Device -ceq $second.Device) { $identical++ }
     }
 }
+Assert-Inventory ($pairCount -eq 5329 -and $crossSeries -eq 2400 -and $crossFamily -eq 2520 -and $identical -eq 73) `
+    'The ordered catalog pair matrix is incomplete or its architecture distribution changed.'
 
 foreach ($case in @(@('2206',10240), @('2216',10240), @('220a',12288), @('2504',12288), @('2504',8192))) {
     $device, $memory = $case
@@ -214,3 +251,4 @@ foreach ($badSubsystem in @('00000000', '000010DE', 'FFFF10DE', '147D0000', '147
 }
 
 Write-Output "PASS $script:Checks RTX inventory checks with synthetic Windows, NVIDIA and Storage rows."
+Write-Output "Catalog pairs: $pairCount ordered, including $crossSeries cross-series, $crossFamily cross-family and $identical identical-device pairs."

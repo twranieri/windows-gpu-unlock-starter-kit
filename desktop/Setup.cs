@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.12")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.13")]
 
 namespace RtxSetup
 {
@@ -158,6 +158,7 @@ namespace RtxSetup
             "After Windows returns, reconnect the USB and save its boot log before restoring the probe if you need the log.";
         private KitStatus state;
         private string lastReportedFailure;
+        private string lastDiagnosticsPath;
         private bool busy;
         private string inputCache;
         private string nextAction;
@@ -184,7 +185,7 @@ namespace RtxSetup
 
             var masthead = new Panel { Dock = DockStyle.Fill };
             masthead.Controls.Add(new Label { Text = "Windows GPU Unlock", Font = new Font("Segoe UI Semibold", 25), ForeColor = Ink, Location = new Point(0, 3), AutoSize = true });
-            masthead.Controls.Add(new Label { Text = "RTX 30 and 40 series  /  One or two cards  /  Preview 0.4 build 6", ForeColor = Accent, Location = new Point(2, 52), AutoSize = true });
+            masthead.Controls.Add(new Label { Text = "Experimental RTX 30 and 40 series setup", ForeColor = Accent, Location = new Point(2, 52), AutoSize = true });
             frame.Controls.Add(masthead, 0, 0);
             frame.SetColumnSpan(masthead, 2);
 
@@ -194,10 +195,10 @@ namespace RtxSetup
             AddRail(rail, "SETUP PATH", Accent, 31);
             AddRail(rail, "01   Check this PC", Ink, 37);
             AddRail(rail, "02   Prepare probe USB", Ink, 37);
-            AddRail(rail, "03   Test boot from USB", Ink, 37);
-            AddRail(rail, "04   Stage and boot unlock", Ink, 37);
-            AddRail(rail, "05   Verify each GPU", Ink, 37);
-            AddRail(rail, "Use the USB for each boot you want unlocked.", Muted, 55);
+            AddRail(rail, "03   USB boot 1: read-only test", Ink, 43);
+            AddRail(rail, "04   USB boot 2: unlock", Ink, 37);
+            AddRail(rail, "05   View the results", Ink, 37);
+            AddRail(rail, "Setup reads the USB log and shows the next step.", Muted, 49);
             AddRail(rail, "RECOVERY", Accent, 32);
             AddRail(rail, "Power off, remove the USB, then choose Windows Boot Manager.", Muted, 80);
             var guide = MakeButton("Boot and recovery help", false);
@@ -261,6 +262,7 @@ namespace RtxSetup
                 if (nextAction == "ExtractHelp") ShowExtractionSteps(this);
                 else if (nextAction == "Help") await RefreshHelp(ShowBootHelp);
                 else if (nextAction == "BiosHelp") await RefreshHelp(ShowBiosHelp);
+                else if (nextAction == "Benchmarks") OpenBenchmarks();
                 else if (nextAction != null) await RunFlow(nextAction);
             };
             reopen.CheckedChanged += delegate
@@ -311,7 +313,11 @@ namespace RtxSetup
                 if (busy) return;
                 busy = true;
                 UpdateButtons();
-                try { await OpenDiagnostics("Requested by user", SetupDiagnostics.GetCheckFailure(state), drives.SelectedItem as UsbDrive, true); }
+                try
+                {
+                    if (File.Exists(lastDiagnosticsPath)) OpenFile(lastDiagnosticsPath);
+                    else await OpenDiagnostics("Requested by user", SetupDiagnostics.GetCheckFailure(state), drives.SelectedItem as UsbDrive, true);
+                }
                 finally { busy = false; UpdateButtons(); }
             };
             FormClosing += delegate(object sender, FormClosingEventArgs e)
@@ -417,9 +423,10 @@ namespace RtxSetup
                 bool completed = false;
                 if (action != null)
                 {
-                    if (action == "StageUnlock" && !await RunAutomaticBenchmark("Stock", usb, true))
+                    if (action == "StageUnlock" && !await ResolveStockBeforeStaging(
+                        () => RunAutomaticBenchmark("Stock", usb, true), ShowStockBenchmarkOptions))
                     {
-                        next.Text = "A stock result is still missing. Open Tensor benchmarks to retry or turn off automatic tensor benchmarks to stage without a baseline.";
+                        next.Text = "The unlock USB was not prepared. Click Prepare unlock USB to try again, or open Tensor benchmarks to check the stock test.";
                         Append(next.Text);
                         return;
                     }
@@ -488,7 +495,13 @@ namespace RtxSetup
                     (action == "StageUnlock" && state.CanBootUnlock))) ArmResume();
                 var benchmarkUsb = currentUsb;
                 if (completed && action == "Prepare" && state.MediaState == "ProbeStaged")
-                    await RunAutomaticBenchmark("Stock", benchmarkUsb);
+                {
+                    if (!await RunAutomaticBenchmark("Stock", benchmarkUsb))
+                    {
+                        next.Text = "The stock benchmark did not finish. You can still do USB boot 1: the read-only test. Click Show first USB boot. Setup will offer a benchmark retry before preparing the unlock USB.";
+                        Append(next.Text);
+                    }
+                }
                 else if (checkAutomaticUnlocked && benchmarkUsb != null && state.MediaState == "UnlockLogged" &&
                     HasVerifiedBootPrerequisites(state))
                     await RunAutomaticBenchmark("Unlocked", benchmarkUsb);
@@ -529,7 +542,7 @@ namespace RtxSetup
             }
         }
 
-        private async Task OpenDiagnostics(string step, string detail, UsbDrive usb, bool force, Action<string> notify = null)
+        private async Task OpenDiagnostics(string step, string detail, UsbDrive usb, bool force, Action<string> notify = null, bool openReport = true)
         {
             var key = step + "\n" + detail + "\n" + (usb == null ? null : usb.VolumeId);
             if (!force && lastReportedFailure == key) return;
@@ -539,8 +552,9 @@ namespace RtxSetup
             {
                 var path = await Task.Run(() => SetupDiagnostics.Save(root, step, detail, snapshot, usb));
                 lastReportedFailure = key;
-                notify("Diagnostics saved. Attach this text file when reporting the problem. " + path);
-                OpenFile(path);
+                lastDiagnosticsPath = path;
+                notify("Diagnostics saved. Use Open diagnostics in Setup to view the latest report. " + path);
+                if (openReport) OpenFile(path);
             }
             catch (Exception error)
             {
@@ -572,10 +586,10 @@ namespace RtxSetup
                         prompt += "\r\n\r\n" + BenchmarkDownload + " Setup then runs any needed stock tensor tests. Use a normal Windows Boot Manager boot and close GPU-heavy apps first.";
                     break;
                 case "StageUnlock":
-                    prompt = "Did the USB probe return to Windows on its own? If it did, click OK to stage the unlock on " + usb +
-                        ". At the next USB boot, Space or Enter confirms the unlock for the listed GPUs.";
+                    prompt = "Setup read the USB log and found that the read-only test passed. Click OK if Windows opened on its own after that boot. " +
+                        "Setup will prepare " + usb + " for USB boot 2. Preparing the USB does not change your GPUs.";
                     if (automaticBenchmarks.Checked)
-                        prompt += "\r\n\r\n" + BenchmarkDownload + " Setup runs any missing stock tensor tests before staging. Use a normal Windows Boot Manager boot and close GPU-heavy apps first.";
+                        prompt += "\r\n\r\nSetup will run any missing stock benchmarks first. If a test fails, you can retry or continue without that comparison.";
                     break;
                 default:
                     prompt = "Restore the verified read-only probe on " + usb + "? This clears the old USB boot log. Save a copy first if you need it.";
@@ -717,22 +731,37 @@ namespace RtxSetup
                     if (blockers.Count == 0) nextAction = "Prepare";
                     break;
                 case "ProbeStaged":
-                    phase.Text = "Boot the read-only probe";
+                    phase.Text = "USB boot 1: read-only test";
+                    if (!state.MediaFailed)
+                        next.Text = "Click Show first USB boot. This test checks the GPUs without changing them. When Windows returns, reopen Setup and click Refresh.";
                     nextAction = "Help";
                     break;
                 case "ProbePassed":
                     phase.Text = "Probe passed";
                     next.Text = blockers.Count == 0
-                        ? "The read-only test matched every card and started Windows handoff. If Windows opened on its own, click Stage unlock USB."
+                        ? "Setup found the read-only result in the USB log. If Windows opened normally after that boot, click Prepare unlock USB. The unlock only runs on the second USB boot."
                         : "The probe passed. Complete the Windows checks above before staging the unlock.";
                     if (blockers.Count == 0) nextAction = "StageUnlock";
                     break;
                 case "UnlockStaged":
-                    phase.Text = "Unlock loader staged";
+                    phase.Text = "USB boot 2: unlock";
+                    if (state.CanBootUnlock)
+                        next.Text = "The unlock USB is ready. Click Show second USB boot. Confirm the unlock at the prompt, then reopen Setup when Windows returns.";
                     nextAction = "Help";
                     break;
                 case "UnlockLogged":
                     phase.Text = "Latest USB boot log";
+                    if (state.CompletedUnlockBoot)
+                    {
+                        next.Text = "Setup matched the USB log to this Windows startup. Click View benchmark results to see your comparison or run the after test.";
+                        nextAction = "Benchmarks";
+                    }
+                    else
+                    {
+                        nextAction = "Help";
+                        if (!state.MediaFailed)
+                            next.Text = "Setup found an unlock log but could not verify it for this Windows startup. Click Show recovery steps.";
+                    }
                     break;
                 case "Recoverable":
                     phase.Text = "Restore the probe to resume";
@@ -741,7 +770,10 @@ namespace RtxSetup
                     phase.Text = "USB needs attention";
                     break;
             }
-            if (!string.IsNullOrWhiteSpace(state.MediaTitle)) phase.Text = state.MediaTitle;
+            if (!string.IsNullOrWhiteSpace(state.MediaTitle) &&
+                (state.MediaState != "ProbeStaged" || state.MediaFailed) &&
+                (state.MediaState != "UnlockStaged" || !state.CanBootUnlock))
+                phase.Text = state.CompletedUnlockBoot ? "USB boot matched this Windows startup" : state.MediaTitle;
             if (available.Count == 0 && string.IsNullOrEmpty(state.StorageError))
             {
                 phase.Text = "No eligible USB drive found";
@@ -810,12 +842,14 @@ namespace RtxSetup
             else if (nextAction == "ExtractHelp") primary.Text = "Show extraction steps";
             else if (nextAction == "FormatUsb") primary.Text = "Format USB";
             else if (nextAction == "Prepare") primary.Text = "Prepare probe USB";
-            else if (nextAction == "StageUnlock") primary.Text = "Stage unlock USB";
+            else if (nextAction == "StageUnlock") primary.Text = "Prepare unlock USB";
+            else if (nextAction == "Benchmarks") primary.Text = "View benchmark results";
             else if (nextAction == "Help")
             {
                 if (available.Count == 0) primary.Text = "USB drive help";
-                else primary.Text = (state.MediaState == "UnlockStaged" && !state.CanBootUnlock) || !HasVerifiedBootPrerequisites(state)
-                    ? "Show recovery steps" : "Show boot steps";
+                else primary.Text = state.MediaState == "UnlockLogged" || state.MediaFailed ||
+                    (state.MediaState == "UnlockStaged" && !state.CanBootUnlock) || !HasVerifiedBootPrerequisites(state)
+                    ? "Show recovery steps" : state.CanBootUnlock ? "Show second USB boot" : "Show first USB boot";
             }
             else if (selected == null) primary.Text = "Select a USB drive";
             else primary.Text = "Setup action unavailable";
@@ -883,14 +917,14 @@ namespace RtxSetup
                 : "the UEFI entry for your USB drive (" + usb.Label + ")";
             string step = unlockStaged
                 ? "At the unlock prompt, press Space or Enter within 30 seconds to confirm, or Esc to skip."
-                : "The read-only probe can wait 30 seconds at its prompt. Let it run and return to Windows.";
+                : "Let the read-only test run. It checks the GPUs without changing them. No unlock confirmation is needed.";
             string boot = "1. Save your work and shut down Windows completely.\r\n\r\n" +
                 "2. Turn the PC on. Use the one-time Boot Menu key shown by your PC at startup, then choose " + entry + ".\r\n\r\n" +
                 "3. " + step + " Once Windows returns, reopen Setup and click Refresh.";
             if (probeStaged && state.HasLog) boot = next.Text + "\r\n\r\nIf you run the read-only test again:\r\n\r\n" + boot;
             MessageBox.Show(this,
                 boot + "\r\n\r\n" + recovery,
-                "Boot and recovery help", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                unlockStaged ? "USB boot 2: unlock" : "USB boot 1: read-only test", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void UpdateResumeAfterFlow(string action, bool completed)
@@ -915,12 +949,12 @@ namespace RtxSetup
                 Resume.Cancel();
                 resumeCleanupComplete = true;
                 lastResumeCleanupError = null;
-                reopen.Text = "Unlock boot verified. Automatic reopening is off.";
-                Append("This unlock boot is verified. Setup's one-time reopen entry is cleared.");
+                reopen.Text = "USB boot matched. Automatic reopening is off.";
+                Append("The USB log matches this Windows startup. Setup's one-time reopen entry is cleared.");
             }
             catch (Exception error)
             {
-                reopen.Text = "Unlock boot verified. Refresh to retry removing the reopen entry.";
+                reopen.Text = "USB boot matched. Refresh to retry removing the reopen entry.";
                 if (lastResumeCleanupError != error.Message)
                     Append("Could not remove Setup's one-time reopen entry. Click Refresh to retry. " + error.Message);
                 lastResumeCleanupError = error.Message;
@@ -1113,7 +1147,7 @@ namespace RtxSetup
         private MeasureStatus ShowBenchmarks(UsbDrive usb, MeasureStatus initial, string automaticAction)
         {
             using (var dialog = new BenchmarkWindow((action, python, gpu) => RunMeasure(action, python, gpu, usb),
-                (step, detail, notify) => OpenDiagnostics(step, detail, usb, true, notify),
+                (step, detail, notify) => OpenDiagnostics(step, detail, usb, true, notify, false),
                 EnsureBenchmarkPrerequisite, benchmarkPython, initial, automaticAction))
             {
                 dialog.ShowDialog(this);
@@ -1157,8 +1191,56 @@ namespace RtxSetup
                 Append("Automatic tensor test could not start. Open Tensor benchmarks for details. " + error.Message);
                 failure = error.Message;
             }
-            await OpenDiagnostics("Automatic " + action + " tensor test", failure, usb, explicitRetry);
+            await OpenDiagnostics("Automatic " + action + " tensor test", failure, usb, explicitRetry, openReport: false);
             return false;
+        }
+
+        internal static async Task<bool> ResolveStockBeforeStaging(Func<Task<bool>> tryStock, Func<DialogResult> choose)
+        {
+            while (!await tryStock())
+            {
+                var choice = choose();
+                if (choice == DialogResult.Ignore) return true;
+                if (choice != DialogResult.Retry) return false;
+            }
+            return true;
+        }
+
+        private DialogResult ShowStockBenchmarkOptions()
+        {
+            using (var dialog = new Form
+            {
+                Text = "Stock benchmark did not finish", StartPosition = FormStartPosition.CenterParent,
+                AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(620, 190),
+                FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false,
+                ShowInTaskbar = false, Font = Font, BackColor = Canvas, ForeColor = Ink
+            })
+            {
+                var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(18) };
+                content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                dialog.Controls.Add(content);
+                AddText(content, new Label { Font = new Font("Segoe UI Semibold", 14) },
+                    "The read-only test passed", Accent, 37);
+                AddText(content, new Label(),
+                    "Retry the stock test to get a before-and-after comparison. You can prepare the unlock USB now, but any GPU without a stock result will have no comparison for this attempt.",
+                    Ink, 68);
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+                var retry = MakeButton("Retry stock test", true);
+                var skip = MakeButton("Continue without comparison", false);
+                var back = MakeButton("Back to Setup", false);
+                retry.DialogResult = DialogResult.Retry;
+                skip.DialogResult = DialogResult.Ignore;
+                back.DialogResult = DialogResult.Cancel;
+                buttons.Controls.AddRange(new Control[] { retry, skip, back });
+                content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                content.Controls.Add(buttons);
+                dialog.AcceptButton = retry;
+                dialog.CancelButton = back;
+                var result = dialog.ShowDialog(this);
+                if (result == DialogResult.Ignore)
+                    Append("Continuing without a stock comparison for any GPU that does not have a baseline. Automatic benchmarks stay enabled.");
+                return result;
+            }
         }
 
         private sealed class BenchmarkWindow : Form
@@ -1177,6 +1259,7 @@ namespace RtxSetup
             private readonly Button browse = MakeButton("Choose Python", false);
             private readonly Button refresh = MakeButton("Refresh", false);
             private readonly Button folder = MakeButton("Open results folder", false);
+            private readonly Button back = MakeButton("Back to Setup", false);
             private bool working;
 
             public string PythonSelection { get; private set; }
@@ -1211,7 +1294,8 @@ namespace RtxSetup
 
                 var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true };
                 var help = MakeButton("Benchmark help", false);
-                controls.Controls.AddRange(new Control[] { setupRuntime, stock, unlocked, browse, refresh, folder, help });
+                controls.Controls.AddRange(new Control[] { setupRuntime, stock, unlocked, browse, refresh, folder, help, back });
+                back.Click += delegate { Close(); };
                 content.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
                 content.Controls.Add(controls);
                 help.Click += delegate
@@ -1333,7 +1417,7 @@ namespace RtxSetup
                 unlocked.Enabled = !working && (selected == null ? CanMeasure(Measurement, "Unlocked", false) : CanMeasureUnlockedCard(selected));
                 unlocked.Text = selected == null ? "Run unlocked test" : "Run unlocked on selected GPU";
                 setupRuntime.Enabled = !working && Measurement != null && Measurement.CanProvision;
-                browse.Enabled = refresh.Enabled = !working;
+                browse.Enabled = refresh.Enabled = back.Enabled = !working;
                 folder.Enabled = !working && Measurement != null && Directory.Exists(Measurement.ResultsDirectory);
                 UseWaitCursor = working;
             }

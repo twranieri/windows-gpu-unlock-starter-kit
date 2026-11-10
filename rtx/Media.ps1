@@ -238,7 +238,8 @@ function Get-RtxCompletedTargets([string]$Lines,[string]$Prefix,$Targets) {
         if($result -eq 1){$completed+=$bdf}
     }
     if($completed.Count -ne $verdicts.Count){return $null}
-    return [pscustomobject]@{Completed=$completed}
+    $lastCompletion=if($verdicts.Count){$verdicts[$verdicts.Count-1].Index}else{0}
+    return [pscustomobject]@{Completed=$completed;LastCompletion=$lastCompletion}
 }
 
 function Get-RtxLogOutcome($Layout,$Receipt) {
@@ -265,15 +266,17 @@ function Get-RtxLogOutcome($Layout,$Receipt) {
         $probe[0].Groups['nonce'].Value -ceq $Receipt.Nonce -and $probe[0].Groups['count'].Value -eq [string]$count
     $unlockMatches=$unlock.Count -eq 1 -and $probe.Count -eq 0 -and
         $unlock[0].Groups['nonce'].Value -ceq $Receipt.Nonce -and $unlock[0].Groups['count'].Value -eq [string]$count
-    $handoff='CHAIN: StartImage -> handing control to the OS loader|CHAIN-PRE: start-time PE header probe ok - StartImage'
-    $handoffFailed=$lines -match 'CHAIN: failed:|CHAIN: bootmgfw returned unexpectedly'
+    $handoff=$modulePrefix+'(?:CHAIN: StartImage -> handing control to the OS loader|CHAIN-PRE: start-time PE header probe ok - StartImage(?: the preloaded ''[^''\n]+'')?)$'
+    $firstHandoff=[regex]::Match($lines,$handoff)
+    $handoffAfterProbe=$probeMatches -and $firstHandoff.Success -and $firstHandoff.Index -gt $probe[0].Index
+    $handoffFailed=$lines -cmatch ($modulePrefix+'(?:CHAIN: failed: [^\n]+|CHAIN: bootmgfw returned unexpectedly)$')
     $refusal=Get-RtxLogRefusal $lines $prefix
 
     if($isProbe) {
         if($refusal){return New-RtxMediaStatus 'ProbeStaged' 'Probe refused' $refusal $true -Failed}
         if($handoffFailed){return New-RtxMediaStatus 'ProbeStaged' 'Probe handoff failed' "The probe reported a Windows handoff failure. $recovery" $true -Failed}
         if($probeMatches) {
-            if($lines.Substring($probe[0].Index) -match $handoff) {
+            if($handoffAfterProbe) {
                 return New-RtxMediaStatus 'ProbePassed' 'Probe passed' 'The read-only probe matched every card, verified it was awake in UEFI, and started the Windows handoff.' $true
             }
             return New-RtxMediaStatus 'ProbeStaged' 'Probe handoff unconfirmed' "The probe matched the GPU set, but the log does not show a Windows handoff after that check. $recovery" $true -Failed
@@ -284,16 +287,17 @@ function Get-RtxLogOutcome($Layout,$Receipt) {
         return New-RtxMediaStatus 'ProbeStaged' 'Probe result incomplete' "The USB log has no complete result from this probe. Older DIAG files cannot verify this package. $recovery" $true -Failed
     }
 
-    if($probeMatches -and !$refusal -and !$handoffFailed -and $lines.Substring($probe[0].Index) -match $handoff) {
+    if($handoffAfterProbe -and !$refusal -and !$handoffFailed) {
         return New-RtxMediaStatus 'UnlockStaged' 'Unlock USB ready' "The USB still has its read-only probe log. $unlockReady $recovery" $true $true
     }
     $confirmationAborted=$lines -cmatch ($modulePrefix+'CONFIRM: [^\n]{1,120} - ABORT to Windows, NOTHING was unlocked this boot \(zero GPU writes\)$')
+    $transactionRefused=$lines -cmatch ($prefix+'KIT: transaction refused before any GPU write$')
     if(!$unlockMatches) {
         if($confirmationAborted -and !$probe.Count -and !$unlock.Count) {
             return New-RtxMediaStatus 'UnlockStaged' 'Unlock not confirmed' "The EFI prompt timed out or received a key other than Space or Enter. $recovery" $true -Failed
         }
         if($refusal){return New-RtxMediaStatus 'UnlockStaged' 'Unlock refused' "$refusal $recovery" $true -Failed}
-        if($lines -cmatch ($prefix+'KIT: transaction refused before any GPU write$')) {
+        if($transactionRefused) {
             return New-RtxMediaStatus 'UnlockStaged' 'Unlock refused' "EFI refused the transaction before any GPU write. $recovery" $true -Failed
         }
         if($handoffFailed){return New-RtxMediaStatus 'UnlockStaged' 'Windows handoff failed' "The USB log reports a Windows handoff failure. $recovery" $true -Failed}
@@ -314,7 +318,12 @@ function Get-RtxLogOutcome($Layout,$Receipt) {
         return New-RtxMediaStatus 'UnlockLogged' 'Unlock stopped for recovery' "$summary The kit stopped before starting Windows. Fully power off, remove the USB, and start Windows Boot Manager. Save the log and restore the read-only probe." $true -Failed
     }
     if($handoffFailed){return New-RtxMediaStatus 'UnlockLogged' 'Windows handoff failed' "$summary The log reports a Windows handoff failure. $recovery" $true -Failed}
-    $handoffStarted=$afterMatch -match $handoff
+    $assetsRefused=$lines -cmatch ($prefix+'KIT: incomplete (?:ga102|ad102) assets; no card was touched$')
+    $preflightRefused=$refusal -or $lines -cmatch ($prefix+'KIT: a target changed or D0 could not be confirmed; no card was touched$')
+    if($completed -and ($assetsRefused -or $preflightRefused -or $transactionRefused)) {
+        return New-RtxMediaStatus 'UnlockStaged' 'Unlock result does not match' "The log contains conflicting transaction records. $recovery" $true -Failed
+    }
+    $handoffStarted=$firstHandoff.Success -and $firstHandoff.Index -gt ($unlock[0].Index+$evidence.LastCompletion)
     $handoffMessage=if($handoffStarted){'Windows handoff started.'}else{'The log does not confirm a Windows handoff.'}
     if($completed -eq $count) {
         return New-RtxMediaStatus 'UnlockLogged' 'EFI transactions recorded' "$summary $handoffMessage Check the results in Windows." $true $false $handoffStarted -Failed:(!$handoffStarted)
@@ -322,10 +331,10 @@ function Get-RtxLogOutcome($Layout,$Receipt) {
     if($completed) {
         return New-RtxMediaStatus 'UnlockLogged' 'Partial unlock result' "$summary Completed in EFI: $($evidence.Completed -join ', '). $handoffMessage Check the results in Windows per GPU. $recovery" $true -Failed
     }
-    if($afterMatch -cmatch ($prefix+'KIT: incomplete (?:ga102|ad102) assets; no card was touched$')) {
+    if($assetsRefused) {
         return New-RtxMediaStatus 'UnlockLogged' 'Unlock refused' "EFI could not load all firmware assets. Verify the staged USB in Setup. $recovery" $true -Failed
     }
-    if($refusal -or $afterMatch -cmatch ($prefix+'KIT: a target changed or D0 could not be confirmed; no card was touched$')) {
+    if($preflightRefused) {
         return New-RtxMediaStatus 'UnlockLogged' 'Unlock refused' "The GPU identity or power state failed the transaction check. $recovery" $true -Failed
     }
     if($afterMatch -cmatch ($prefix+'TX: transaction failed: [^\n]{1,160} - NOT retrying this session$')) {

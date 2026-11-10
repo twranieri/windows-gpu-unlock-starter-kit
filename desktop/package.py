@@ -25,6 +25,7 @@ FILES = (
     "tests/test_rtx_media.ps1", "tests/test_rtx_runner.ps1", "tests/test_rtx_windows_prep.ps1",
     "tests/test_rtx_measure.ps1", "tests/test_rtx_diagnostics.ps1",
     "tests/test_benchmark_runtime.ps1", "tests/test_benchmark_prerequisite.ps1", "tests/test_desktop_user_process.ps1",
+    "tests/test_desktop_benchmark_gate.ps1",
 )
 PRIVATE = tuple(value.lower().encode(encoding)
                 for value in (str(Path.home()), Path.home().as_posix())
