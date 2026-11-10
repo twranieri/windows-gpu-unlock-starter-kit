@@ -13,6 +13,9 @@ namespace RtxSetup
         private const string LinkName = "Windows GPU Unlock Setup - Resume.lnk";
         private const string LinkDescription = "Windows GPU Unlock Setup one-shot resume";
         private const string VolumeSwitch = "--resume-volume";
+        private const string NoVolume = "-";
+        private const string DeleteShortcut = "[IO.File]::Delete($link);";
+        private const string TryDeleteShortcut = "try{[IO.File]::Delete($link)}catch{};";
         private const int MaxVolumeLength = 256;
         private const int MaxShortcutArguments = 1023;
 
@@ -54,6 +57,40 @@ namespace RtxSetup
             File.Delete(path);
         }
 
+        public static bool Consume(string exe, string[] args)
+        {
+            string volumeId = ReadVolume(args);
+            if (volumeId == null && (args == null || args.Length != 2 ||
+                args[0] != VolumeSwitch || args[1] != NoVolume)) return false;
+
+            string path = GetLinkPath();
+            if (!File.Exists(path)) return true;
+            RequireShellUser();
+            string powerShell = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
+            ConsumeShortcut(path, Path.GetFullPath(exe), volumeId, powerShell);
+            return true;
+        }
+
+        private static void ConsumeShortcut(string path, string application, string volumeId, string powerShell)
+        {
+            string expectedArguments = BuildArguments(Path.GetFileName(application), volumeId);
+            string expectedDirectory = Path.GetDirectoryName(application);
+            bool matches = false;
+            WithShortcut(delegate(IShellLinkW link, IPersistFile file)
+            {
+                RequireOwnedShortcut(path, link, file, powerShell);
+                var directory = new StringBuilder(1024);
+                var arguments = new StringBuilder(MaxShortcutArguments + 1);
+                link.GetWorkingDirectory(directory, directory.Capacity);
+                link.GetArguments(arguments, arguments.Capacity);
+                string actualArguments = arguments.ToString();
+                matches = string.Equals(directory.ToString(), expectedDirectory, StringComparison.OrdinalIgnoreCase) &&
+                    (string.Equals(actualArguments, expectedArguments, StringComparison.Ordinal) ||
+                     (volumeId != null && string.Equals(actualArguments, expectedArguments.Replace(TryDeleteShortcut, DeleteShortcut), StringComparison.Ordinal)));
+            });
+            if (matches) File.Delete(path);
+        }
+
         public static string ReadVolume(string[] args)
         {
             if (args == null || args.Length != 2 || args[0] != VolumeSwitch ||
@@ -70,14 +107,14 @@ namespace RtxSetup
 
         private static string BuildArguments(string fileName, string volumeId)
         {
-            string resumeArgument = "";
+            string encodedVolume = NoVolume;
             if (!string.IsNullOrEmpty(volumeId))
             {
                 if (!IsVolumeId(volumeId))
                     throw new ArgumentException("The selected drive does not have a valid resume identity.", "volumeId");
-                resumeArgument = " -ArgumentList '" + VolumeSwitch + " " +
-                    Convert.ToBase64String(Encoding.ASCII.GetBytes(volumeId)) + "'";
+                encodedVolume = Convert.ToBase64String(Encoding.ASCII.GetBytes(volumeId));
             }
+            string resumeArgument = " -ArgumentList '" + VolumeSwitch + " " + encodedVolume + "'";
 
             // The shortcut's working directory holds the extracted folder. Only
             // fixed text and Base64 data enter the PowerShell command.
@@ -86,7 +123,7 @@ namespace RtxSetup
                 "$ErrorActionPreference='Stop';" +
                 "$startup=[Environment]::GetFolderPath('Startup');if(!$startup){exit};" +
                 "$link=[IO.Path]::Combine($startup,'" + LinkName + "');if(![IO.File]::Exists($link)){exit};" +
-                "[IO.File]::Delete($link);" +
+                TryDeleteShortcut +
                 "$name=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + name + "'));" +
                 "$folder=[Environment]::CurrentDirectory;$exe=[IO.Path]::Combine($folder,$name);" +
                 "if([IO.File]::Exists($exe)){Start-Process -FilePath $exe -WorkingDirectory $folder" +

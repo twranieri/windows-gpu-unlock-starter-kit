@@ -143,7 +143,7 @@ function Get-RtxKitStatus([string]$KitRoot,[string]$Letter,[string]$Work,[bool]$
         Targets=@();BootProblems=@(Get-RtxBootProblems $prep);Drives=@();FormatDrives=@()
         InventoryError='';BundleError='';StorageError='';PackageError='';WindowsDisplayProblems=@()
         Platform=''
-        HasPackage=$false;MediaState='Unselected';MediaTitle='';HasLog=$false;CanBootUnlock=$false
+        HasPackage=$false;MediaState='Unselected';MediaTitle='';HasLog=$false;CanBootUnlock=$false;MediaFailed=$false
         CompletedUnlockBoot=$false
         MediaMessage='Select a dedicated FAT32 USB drive.'
     }
@@ -180,6 +180,7 @@ function Get-RtxKitStatus([string]$KitRoot,[string]$Letter,[string]$Work,[bool]$
             $status.MediaState=$media.State
             $status.MediaTitle=$media.Title
             $status.HasLog=$media.HasLog
+            $status.MediaFailed=$media.Failed
             $status.CanBootUnlock=$media.CanBootUnlock
             $status.MediaMessage=$media.Message
             if($UseDesktopWork -and $media.CompleteHandoff -and !$status.WindowsDisplayProblems.Count) {
@@ -190,6 +191,7 @@ function Get-RtxKitStatus([string]$KitRoot,[string]$Letter,[string]$Work,[bool]$
             }
         } catch {
             $status.MediaState='Blocked'
+            $status.MediaFailed=$true
             $status.MediaTitle='USB needs attention'
             $status.MediaMessage=$_.Exception.Message
         }

@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.6")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.7")]
 
 namespace RtxSetup
 {
@@ -57,6 +57,7 @@ namespace RtxSetup
         public string Platform { get; set; }
         public bool HasPackage { get; set; }
         public bool HasLog { get; set; }
+        public bool MediaFailed { get; set; }
         public bool CanBootUnlock { get; set; }
         public bool CompletedUnlockBoot { get; set; }
         public string FirmwareState { get; set; }
@@ -129,6 +130,7 @@ namespace RtxSetup
         private readonly Button format = MakeButton("Format USB", false);
         private readonly Button offline = MakeButton("Offline inputs", false);
         private readonly Button bootLog = MakeButton("Open USB log", false);
+        private readonly Button diagnostics = MakeButton("Open diagnostics", false);
         private readonly Button benchmark = MakeButton("Tensor benchmarks", false);
         private const string ResumeOptionText = "Reopen Setup at next sign-in after a setup change";
         private readonly CheckBox reopen = new CheckBox
@@ -150,6 +152,7 @@ namespace RtxSetup
         private const string RecoverySteps = "Fully power off, remove the USB, then start Windows Boot Manager directly. " +
             "After Windows returns, reconnect the USB and save its boot log before restoring the probe if you need the log.";
         private KitStatus state;
+        private string lastReportedFailure;
         private bool busy;
         private string inputCache;
         private string nextAction;
@@ -226,7 +229,7 @@ namespace RtxSetup
             phase.Font = new Font("Segoe UI Semibold", 13);
             AddText(details, next, "", Ink, 108);
             var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true };
-            actions.Controls.AddRange(new Control[] { primary, refresh, restore, format, benchmark, offline, bootLog });
+            actions.Controls.AddRange(new Control[] { primary, refresh, restore, format, benchmark, offline, bootLog, diagnostics });
             details.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
             details.Controls.Add(actions);
             AddText(details, cacheLabel, "First-time setup downloads pinned firmware inputs. The app verifies them before use.", Muted, 38);
@@ -298,6 +301,14 @@ namespace RtxSetup
                 UsbDrive usb = drives.SelectedItem as UsbDrive;
                 if (usb != null) OpenFile(usb.Letter + @":\loader.log");
             };
+            diagnostics.Click += async delegate
+            {
+                if (busy) return;
+                busy = true;
+                UpdateButtons();
+                try { await OpenDiagnostics("Requested by user", SetupDiagnostics.GetCheckFailure(state), drives.SelectedItem as UsbDrive, true); }
+                finally { busy = false; UpdateButtons(); }
+            };
             FormClosing += delegate(object sender, FormClosingEventArgs e)
             {
                 if (busy && e.CloseReason == CloseReason.UserClosing)
@@ -361,6 +372,7 @@ namespace RtxSetup
             format.Visible = CanFormatBlockedFat32(state, FindFormatDrive(state, drives.SelectedItem as UsbDrive), KitTargetListMissing);
             format.Enabled = !busy;
             bootLog.Enabled = !busy && state != null && state.HasLog;
+            diagnostics.Enabled = !busy;
             UseWaitCursor = busy;
             decryptRefresh.Enabled = !busy && state != null && state.EncryptionState == "DecryptionInProgress";
         }
@@ -390,6 +402,8 @@ namespace RtxSetup
             }
             busy = true;
             UpdateButtons();
+            string failure = null;
+            string unexpectedFailure = null;
             try
             {
                 bool completed = false;
@@ -404,7 +418,11 @@ namespace RtxSetup
                     Append("Running " + action + (windowsAction ? " in Windows." : " on " + letter + ":"));
                     var result = await RunBackend(action, windowsAction ? null : letter, windowsAction ? null : usb.VolumeId);
                     completed = result.ExitCode == 0;
-                    if (!completed) Append("Operation stopped. Review the activity above.");
+                    if (!completed)
+                    {
+                        failure = "Setup engine exit code " + result.ExitCode + Environment.NewLine + result.Error;
+                        Append("Operation stopped. Review the activity above.");
+                    }
                 }
                 state = await ReadStatus(letter);
                 bool justFormatted = completed && action == "FormatUsb";
@@ -427,10 +445,16 @@ namespace RtxSetup
                 requestedVolume = selection == null && !justFormatted ? preferredVolume : null;
                 ShowStatus(selection);
                 UpdateResumeAfterFlow(action, completed);
+                var currentUsb = drives.SelectedItem as UsbDrive;
+                var checkFailure = lastResumeCleanupError ?? SetupDiagnostics.GetCheckFailure(state);
+                if (failure != null || checkFailure != null)
+                    await OpenDiagnostics(action ?? "Setup check", failure ?? checkFailure, currentUsb ?? usb, action != null);
+                else
+                    lastReportedFailure = null;
                 if (completed && (windowsAction || action == "FormatUsb" ||
                     ((action == "Prepare" || action == "RestoreProbe") && state.MediaState == "ProbeStaged") ||
                     (action == "StageUnlock" && state.CanBootUnlock))) ArmResume();
-                var benchmarkUsb = drives.SelectedItem as UsbDrive;
+                var benchmarkUsb = currentUsb;
                 if (completed && action == "Prepare" && state.MediaState == "ProbeStaged")
                     await RunAutomaticBenchmark("Stock", benchmarkUsb);
                 else if (checkAutomaticUnlocked && benchmarkUsb != null && state.MediaState == "UnlockLogged" &&
@@ -444,11 +468,37 @@ namespace RtxSetup
                 phase.Text = "Setup check failed";
                 next.Text = error.Message;
                 Append(error.Message);
+                unexpectedFailure = failure ?? error.Message;
             }
             finally
             {
-                busy = false;
-                UpdateButtons();
+                if (unexpectedFailure == null)
+                {
+                    busy = false;
+                    UpdateButtons();
+                }
+            }
+            if (unexpectedFailure == null) return;
+            try { await OpenDiagnostics(action ?? "Setup check", unexpectedFailure, usb, action != null); }
+            finally { busy = false; UpdateButtons(); }
+        }
+
+        private async Task OpenDiagnostics(string step, string detail, UsbDrive usb, bool force, Action<string> notify = null)
+        {
+            var key = step + "\n" + detail + "\n" + (usb == null ? null : usb.VolumeId);
+            if (!force && lastReportedFailure == key) return;
+            if (notify == null) notify = Append;
+            var snapshot = state;
+            try
+            {
+                var path = await Task.Run(() => SetupDiagnostics.Save(root, step, detail, snapshot, usb));
+                lastReportedFailure = key;
+                notify("Diagnostics saved. Attach this text file when reporting the problem. " + path);
+                OpenFile(path);
+            }
+            catch (Exception error)
+            {
+                notify("Setup could not save the diagnostic report. " + error.Message);
             }
         }
 
@@ -579,7 +629,7 @@ namespace RtxSetup
 
             var hardware = new List<string>();
             foreach (var card in state.Targets)
-                hardware.Add(string.Format("{0}   {1:0.##} GB   PCI {2}   ID {3}", card.Label, card.MemoryMiB / 1024.0, card.Bdf, card.Device));
+                hardware.Add(string.Format("{0}   {1:N0} MiB reported by Windows   PCI {2}   ID {3}", card.Label, card.MemoryMiB, card.Bdf, card.Device));
             if (hardware.Count > 0 && !string.IsNullOrEmpty(state.Platform)) hardware.Add(state.Platform);
             cards.Text = hardware.Count > 0 ? string.Join(Environment.NewLine, hardware) : state.InventoryError;
 
@@ -773,6 +823,7 @@ namespace RtxSetup
             {
                 Resume.Cancel();
                 resumeCleanupComplete = true;
+                lastResumeCleanupError = null;
                 reopen.Text = "Unlock boot verified. Automatic reopening is off.";
                 Append("This unlock boot is verified. Setup's one-time reopen entry is cleared.");
             }
@@ -855,8 +906,8 @@ namespace RtxSetup
                     process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
                     {
                         if (e.Data == null) return;
-                        if (action == "Status") stderr.AppendLine(e.Data);
-                        else BeginInvoke(new Action<string>(Append), e.Data);
+                        if (stderr.Length < 16000) stderr.AppendLine(e.Data);
+                        if (action != "Status") BeginInvoke(new Action<string>(Append), e.Data);
                     };
                     process.Start();
                     process.BeginOutputReadLine();
@@ -911,7 +962,12 @@ namespace RtxSetup
             if (!string.IsNullOrWhiteSpace(result.Output))
             {
                 var report = new JavaScriptSerializer().Deserialize<MeasureStatus>(result.Output);
-                if (report != null && report.Cards != null) return report;
+                if (report != null && report.Cards != null)
+                {
+                    if (result.ExitCode != 0)
+                        throw new InvalidOperationException(report.Message + Environment.NewLine + result.Error);
+                    return report;
+                }
             }
             var error = string.IsNullOrWhiteSpace(result.Error) ? "The benchmark returned no usable status." : result.Error.Trim();
             throw new InvalidOperationException(error.Length > 1200 ? error.Substring(0, 1200) : error);
@@ -966,6 +1022,7 @@ namespace RtxSetup
         private MeasureStatus ShowBenchmarks(UsbDrive usb, MeasureStatus initial, string automaticAction)
         {
             using (var dialog = new BenchmarkWindow((action, python, gpu) => RunMeasure(action, python, gpu, usb),
+                (step, detail, notify) => OpenDiagnostics(step, detail, usb, true, notify),
                 benchmarkPython, initial, automaticAction))
             {
                 dialog.ShowDialog(this);
@@ -977,6 +1034,7 @@ namespace RtxSetup
         private async Task<bool> RunAutomaticBenchmark(string action, UsbDrive usb, bool explicitRetry = false)
         {
             if (!automaticBenchmarks.Checked) return true;
+            string failure;
             try
             {
                 var status = ParseMeasureStatus(await RunMeasure("Status", benchmarkPython, null, usb));
@@ -996,13 +1054,16 @@ namespace RtxSetup
             catch (Exception error)
             {
                 Append("Automatic tensor test could not start. Open Tensor benchmarks for details. " + error.Message);
-                return false;
+                failure = error.Message;
             }
+            await OpenDiagnostics("Automatic " + action + " tensor test", failure, usb, explicitRetry);
+            return false;
         }
 
         private sealed class BenchmarkWindow : Form
         {
             private readonly Func<string, string, string, Task<BackendResult>> run;
+            private readonly Func<string, string, Action<string>, Task> reportFailure;
             private readonly string automaticAction;
             private readonly Label statusLabel = new Label();
             private readonly Label pythonLabel = new Label();
@@ -1018,10 +1079,12 @@ namespace RtxSetup
             public string PythonSelection { get; private set; }
             public MeasureStatus Measurement { get; private set; }
 
-            public BenchmarkWindow(Func<string, string, string, Task<BackendResult>> run, string python,
+            public BenchmarkWindow(Func<string, string, string, Task<BackendResult>> run,
+                Func<string, string, Action<string>, Task> reportFailure, string python,
                 MeasureStatus initial, string automaticAction)
             {
                 this.run = run;
+                this.reportFailure = reportFailure;
                 this.automaticAction = automaticAction;
                 PythonSelection = python;
                 Measurement = initial;
@@ -1178,8 +1241,17 @@ namespace RtxSetup
                 working = true;
                 UpdateMeasureButtons();
                 statusLabel.Text = "Checking benchmark prerequisites...";
+                string failure = null;
                 try { Measurement = await Read("Status", null); Display(); }
-                catch (Exception error) { Measurement = null; Display(); statusLabel.Text = error.Message; AppendActivity(error.Message); }
+                catch (Exception error)
+                {
+                    Measurement = null;
+                    Display();
+                    statusLabel.Text = error.Message;
+                    AppendActivity(error.Message);
+                    failure = error.Message;
+                }
+                try { if (failure != null) await reportFailure("Tensor benchmark check", failure, AppendActivity); }
                 finally { working = false; UpdateMeasureButtons(); }
             }
 
@@ -1198,12 +1270,15 @@ namespace RtxSetup
                 }
                 working = true;
                 bool returnToSetup = false;
+                string selectedGpu = null;
+                string failure = null;
                 UpdateMeasureButtons();
                 statusLabel.Text = "Running the " + action.ToLowerInvariant() + " tensor test. Keep this window open until it finishes.";
                 try
                 {
                     foreach (var gpu in targets)
                     {
+                        selectedGpu = gpu;
                         var outcome = await Read(action, gpu);
                         AppendActivity(outcome.Message);
                         if (outcome.Status != "Complete") break;
@@ -1212,7 +1287,18 @@ namespace RtxSetup
                     Display();
                     returnToSetup = automatic && action == "Stock" && HasStockForAll(Measurement);
                 }
-                catch (Exception error) { statusLabel.Text = error.Message; AppendActivity(error.Message); }
+                catch (Exception error)
+                {
+                    statusLabel.Text = error.Message;
+                    AppendActivity(error.Message);
+                    failure = error.Message;
+                }
+                try
+                {
+                    if (failure != null)
+                        await reportFailure(action + " tensor test" + (selectedGpu == null ? "" : " on PCI " + selectedGpu),
+                            failure, AppendActivity);
+                }
                 finally { working = false; UpdateMeasureButtons(); }
                 if (returnToSetup) Close();
             }
@@ -1263,6 +1349,14 @@ namespace RtxSetup
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            bool resumed;
+            try { resumed = Resume.Consume(Application.ExecutablePath, args); }
+            catch (Exception error)
+            {
+                resumed = true;
+                MessageBox.Show("Setup could not clear its sign-in shortcut. " + error.Message,
+                    "Windows GPU Unlock Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
             if (!File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RTX.ps1")))
             {
                 MessageBox.Show("Right-click the downloaded ZIP and choose Extract All. Open Windows GPU Unlock Setup.exe from the extracted folder.",
@@ -1273,7 +1367,7 @@ namespace RtxSetup
             using (var instance = new Mutex(true, @"Local\WindowsGpuUnlockSetup", out first))
             {
                 if (first) Application.Run(new SetupWindow(Resume.ReadVolume(args)));
-                else MessageBox.Show("Windows GPU Unlock Setup is already running.", "Windows GPU Unlock Setup");
+                else if (!resumed) MessageBox.Show("Windows GPU Unlock Setup is already running.", "Windows GPU Unlock Setup");
             }
         }
     }

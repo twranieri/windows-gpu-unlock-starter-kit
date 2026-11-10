@@ -39,6 +39,11 @@ $one = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow) -WindowsRows @($amd,$ga,$v
 Assert-Inventory ($one.Count -eq 1 -and $one[0].Bdf -ceq '0000:2b:00.0' -and $one[0].Device -ceq '2204' -and
     $one[0].Subsystem -ceq '147d10de' -and $one[0].MemoryMiB -is [int] -and $one[0].MemoryMiB -eq 24576 -and
     $one[0].Family -ceq 'ga102' -and $one[0].Label -ceq 'GeForce RTX 3090') 'Single Ampere inventory or other-display filtering failed.'
+$rtx4090 = ConvertTo-RtxInventory -NvidiaRows @('00000000:01:00.0, 0x268410DE, 0x51031462, 23028') `
+    -WindowsRows @(New-DisplayRow '2684' '51031462' 'one') -Catalog $catalog
+Assert-Inventory ($rtx4090.Device -ceq '2684' -and $rtx4090.Subsystem -ceq '51031462' -and
+    $rtx4090.Family -ceq 'ad102' -and $rtx4090.Label -ceq 'GeForce RTX 4090' -and
+    $rtx4090.MemoryMiB -eq 23028) 'RTX 4090 inventory must preserve its reported capacity.'
 $pair = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow,$adRow) -WindowsRows @($ad,$ga) -Catalog $catalog)
 Assert-Inventory ($pair.Count -eq 2 -and $pair[0].Device -ceq '2782' -and $pair[0].Family -ceq 'ad102' -and
     $pair[0].Subsystem -ceq '40e81458' -and $pair[1].Family -ceq 'ga102') 'Mixed pair was not sorted and classified by BDF.'

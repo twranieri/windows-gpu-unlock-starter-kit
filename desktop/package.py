@@ -15,14 +15,14 @@ FILES = (
     "benchmark-tensors.py", "compare-tensors.py", "rtx30-pci.json", "rtx40-pci.json",
     "rtx/Build.ps1", "rtx/Inventory.ps1", "rtx/Media.ps1", "rtx/WindowsPrep.ps1", "rtx/engine.json", "rtx/engine.patch",
     "desktop/BUILD.md", "desktop/Build-Desktop.ps1", "desktop/Setup.cs", "desktop/Resume.cs",
-    "desktop/UserProcess.cs", "desktop/Measure.ps1",
+    "desktop/UserProcess.cs", "desktop/Measure.ps1", "desktop/SetupDiagnostics.cs", "desktop/Diagnostics.ps1",
     "desktop/Setup.manifest", "desktop/package.py",
     "docs/RTX30-40.md", "docs/COMPARISON.md", "docs/COMPATIBILITY.md", "docs/QUICKSTART.md",
     "docs/ORIGINATING-RESULTS.md", "experimental/dual-gpu/README.md",
     "experimental/dual-gpu/Get-Source.ps1", "experimental/dual-gpu/source.json",
     "experimental/dual-gpu/upstream.patch", "tests/test_rtx_inventory.ps1",
     "tests/test_rtx_media.ps1", "tests/test_rtx_runner.ps1", "tests/test_rtx_windows_prep.ps1",
-    "tests/test_rtx_measure.ps1",
+    "tests/test_rtx_measure.ps1", "tests/test_rtx_diagnostics.ps1",
 )
 PRIVATE = tuple(value.lower().encode(encoding)
                 for value in (str(Path.home()), Path.home().as_posix())

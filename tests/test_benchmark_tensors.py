@@ -251,13 +251,11 @@ class TensorBenchmarkTests(unittest.TestCase):
             load.assert_not_called()
 
     def test_torch_gpu_mismatch_and_missing_capabilities_fail(self):
-        for change in ("name", "memory", "old_gpu", "missing_flag", "missing_out_dtype"):
+        for change in ("name", "old_gpu", "missing_flag", "missing_out_dtype"):
             with self.subTest(change=change):
                 torch = fake_torch()
                 if change == "name":
                     torch.cuda.get_device_name = lambda index: "different GPU"
-                elif change == "memory":
-                    torch.props.total_memory = 12 * 1024 ** 3
                 elif change == "old_gpu":
                     torch.props.major = 7
                 elif change == "missing_flag":
@@ -266,6 +264,33 @@ class TensorBenchmarkTests(unittest.TestCase):
                     torch.mm = lambda *args, **kwargs: None
                 with self.assertRaises(B.BenchmarkError):
                     B.validate_torch(torch, gpu())
+
+    def test_matched_rtx4090_accepts_different_cuda_and_nvidia_memory_totals(self):
+        snapshot = gpu(**{"name": "NVIDIA GeForce RTX 4090", "memory.total": "24564"})
+        for cuda_mib in (23028, 24144):
+            with self.subTest(cuda_mib=cuda_mib):
+                torch = fake_torch()
+                torch.props.name = snapshot["name"]
+                torch.props.minor = 9
+                torch.props.total_memory = cuda_mib * 1024 ** 2
+                props, ordinal = B.validate_torch(torch, snapshot)
+                self.assertEqual(props.total_memory, cuda_mib * 1024 ** 2)
+                self.assertEqual(ordinal, 0)
+
+    def test_cuda_and_nvidia_memory_totals_still_must_be_positive(self):
+        for invalid in (0, -1, None, True, "23028", 23028.0):
+            with self.subTest(cuda_total=invalid):
+                torch = fake_torch()
+                torch.props.total_memory = invalid
+                with self.assertRaisesRegex(B.BenchmarkError, "Positive Torch CUDA memory total"):
+                    B.validate_torch(torch, gpu())
+        for invalid in ("0", "-1"):
+            with self.subTest(nvidia_total=invalid):
+                snapshot = gpu(**{"memory.total": invalid})
+                line = ",".join(snapshot[key] for key in B.GPU_FIELDS)
+                with patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=line)), \
+                        self.assertRaisesRegex(B.BenchmarkError, "Positive GPU comparison setting unavailable: memory.total"):
+                    B.gpu_snapshot()
 
     def test_measurement_uses_fp32_out_dtype_and_checks_complete_output(self):
         args = SimpleNamespace(n=4096, warmup_seconds=2, samples=30)

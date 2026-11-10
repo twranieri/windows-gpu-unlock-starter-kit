@@ -1,5 +1,11 @@
 # Changes
 
+## 0.4.0-preview.7 — 2026-11-10
+
+- Open a local support report when setup, EFI verification or a tensor test fails. Reports include the failure step, NVIDIA memory and ECC telemetry, Windows and firmware versions, and selected EFI outcome details.
+- Match CUDA devices by UUID even when CUDA and NVIDIA-SMI report different memory totals. The tensor comparison still checks both totals across runs.
+- Clear Setup's one-time Startup shortcut when the resume launch is consumed and after a verified unlock boot.
+
 ## 0.4.0-preview.6 — 2026-11-10
 
 - Compare EFI log time with Windows startup history to reject evidence from the preceding boot.

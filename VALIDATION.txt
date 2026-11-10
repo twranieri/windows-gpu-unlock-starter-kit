@@ -1,3 +1,14 @@
+Starter Kit 0.4.0 desktop preview, build 7, 2026-11-10
+
+- Synthetic Windows inventory and probe dispatch accepted the reported MSI
+  RTX 4090 PCI identity (10DE:2684, subsystem 1462:5103) with 23,028 MiB.
+- UUID-bound tensor fixtures accepted different CUDA and NVIDIA-SMI memory
+  totals. Matched comparisons still reject changes between runs.
+- Diagnostic fixtures checked failure classification, GPU telemetry fallback
+  and redaction. Scratch shortcuts checked one-shot consumption and ownership.
+- The reported ASUS Z890 system still needs a physical EFI probe and unlock
+  test. The sign-in shortcut was tested with scratch links.
+
 Starter Kit 0.4.0 desktop preview, build 6, 2026-11-10
 
 - Verified Windows startup history against the current boot. Regression

@@ -205,10 +205,10 @@ def validate_torch(torch, gpu):
     cuda_ordinal, props = matches[0]
     if torch.cuda.get_device_name(cuda_ordinal) != gpu["name"] or props.name != gpu["name"] or props.major < 8:
         raise BenchmarkError("This exact BF16/TF32 protocol requires the matched NVIDIA GPU with compute capability 8.0 or newer")
-    physical_bytes = number(gpu, "memory.total") * 1024 ** 2
-    if (not isinstance(props.total_memory, int) or props.total_memory <= 0 or
-            abs(props.total_memory - physical_bytes) > max(64 * 1024 ** 2, physical_bytes * 0.01)):
-        raise BenchmarkError("Torch and nvidia-smi GPU memory identities disagree")
+    # Windows can report different CUDA and NVIDIA memory totals for the same GPU.
+    # The UUID identifies the card, and the comparator checks each total across runs.
+    if type(props.total_memory) is not int or props.total_memory <= 0:
+        raise BenchmarkError("Positive Torch CUDA memory total is unavailable")
     with torch.cuda.device(cuda_ordinal):
         if not torch.cuda.is_bf16_supported():
             raise BenchmarkError("Native BF16 support is required; no emulation or dtype fallback is used")

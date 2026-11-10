@@ -3,7 +3,7 @@
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../RTX.ps1')
 function Get-RtxInventory {
-    [pscustomobject]@{Label='Test GPU';Bdf='0000:01:00.0';Device='2206';Subsystem='38901462';Family='ga102';MemoryMiB=10240}
+    [pscustomobject]@{Label='GeForce RTX 4090';Bdf='0000:01:00.0';Device='2684';Subsystem='51031462';Family='ad102';MemoryMiB=23028}
 }
 function Get-RtxBootProblems {}
 function Get-RtxEngineManifest($Root) {@{}}
@@ -19,12 +19,12 @@ $script:UnlockCalls=0
 $kitRoot=Split-Path -Parent $PSScriptRoot
 $work=Join-Path $kitRoot 'unused'
 Invoke-RtxKit $kitRoot 'pRoBe' 'E' $work 'cargo' '' $true $false $false 'test-volume'
-if($script:ProbeCalls -ne 1 -or $script:UnlockCalls){throw 'Mixed-case Probe did not select the read-only action.'}
+if($script:ProbeCalls -ne 1 -or $script:UnlockCalls){throw 'RTX 4090 with 23028 MiB did not reach the read-only probe.'}
 $refused=$false
 try {Invoke-RtxKit $kitRoot 'StageUnlock' 'E' $work 'cargo' '' $true $false $false 'wrong-volume'}
 catch {$refused=$_.Exception.Message -eq 'USB identity changed.'}
 if(!$refused -or $script:UnlockCalls){throw 'Changed USB identity reached unlock staging.'}
-'PASS mixed-case read-only dispatch and wrong-volume refusal.'
+'PASS read-only probe dispatch for the reported RTX 4090 and wrong-volume refusal.'
 
 function Get-CimInstance {
     [pscustomobject]@{Name='NVIDIA with unavailable resources';PNPDeviceID='PCI\VEN_10DE&DEV_2783';ConfigManagerErrorCode=12;Present=$true}

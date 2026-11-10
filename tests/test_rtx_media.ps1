@@ -48,6 +48,7 @@ try {
     }
     $null=Assert-State 'Blocked' $null
     $ready=Assert-Outcome 'ProbeStaged' 'Probe USB ready' $false $receipt
+    if($ready.Failed){throw 'Waiting for the first probe boot must not trigger a failure report.'}
     if($ready.Message -notmatch 'Two required files verified.*nothing to copy manually.*one-time boot menu') {
         throw 'Probe readiness did not explain USB files and the one-time boot menu.'
     }
@@ -55,7 +56,8 @@ try {
     $log=Join-Path $usb 'loader.log'
     $handoff='CHAIN: StartImage -> handing control to the OS loader'
     [IO.File]::WriteAllText($log,'')
-    $null=Assert-Outcome 'ProbeStaged' 'Probe log is empty' $true $receipt
+    $empty=Assert-Outcome 'ProbeStaged' 'Probe log is empty' $true $receipt
+    if(!$empty.Failed){throw 'An empty probe log must trigger a failure report.'}
     Assert-Refused {Publish-RtxUnlock $usb $package $receipt} 'Empty probe log authorized staging.'
     [IO.File]::WriteAllText($log,"private sample`nincomplete reason=probe-unreviewed-envelope`ncapture-complete=0`n")
     $legacy=Assert-Outcome 'ProbeStaged' 'Probe result incomplete' $true $receipt
@@ -144,9 +146,11 @@ try {
     }
     [IO.File]::WriteAllText($log,"$txLine`n$target1`n$complete`n$target2`n$complete`n$handoff`n")
     $full=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
+    if($full.Failed){throw 'A complete unlock and handoff must not trigger a failure report.'}
     if(!$full.CompleteHandoff){throw 'Completed target results and handoff were not exposed as typed evidence.'}
     [IO.File]::WriteAllText($log,"$txLine`n$target1`n$complete`n$target2`n$complete`n")
     $withoutHandoff=Assert-Outcome 'UnlockLogged' 'EFI transactions recorded' $true $receipt
+    if(!$withoutHandoff.Failed){throw 'An unconfirmed handoff must trigger a failure report.'}
     if($withoutHandoff.CompleteHandoff){throw 'A completed transaction without handoff authorized benchmark evidence.'}
     [IO.File]::WriteAllText($log,"$txLine`n$target1`n$complete`n$target2`n[9ms] INFO : loader: FINAL: KIT-STOP: transaction failed: PRIVATE-REASON. Attempting emergency reset.`n")
     $stopped=Assert-Outcome 'UnlockLogged' 'Unlock stopped for recovery' $true $receipt
