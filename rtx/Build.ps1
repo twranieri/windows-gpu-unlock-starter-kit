@@ -51,8 +51,7 @@ function Get-RtxBuildFamilies($Targets) {
         if($target.Bdf -cnotmatch '\A[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.[0-7]\z' -or
            !$bdfs.Add($target.Bdf)){throw 'Invalid or duplicate RTX target BDF.'}
         if($target.Device -cnotmatch '\A[0-9a-f]{4}\z' -or $target.Subsystem -cnotmatch '\A[0-9a-f]{8}\z' -or
-           $target.Subsystem -cin @('00000000','ffffffff') -or
-           ($target.MemoryMiB -isnot [int] -and $target.MemoryMiB -isnot [long]) -or $target.MemoryMiB -le 0){throw 'Invalid RTX target identity or VRAM.'}
+           $target.Subsystem -cin @('00000000','ffffffff')){throw 'Invalid RTX target identity.'}
         switch -CaseSensitive ([string]$target.Family) {
             'ga102' {'30';break}
             'ad102' {'40';break}

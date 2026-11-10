@@ -1,5 +1,10 @@
 # Changes
 
+## 0.4.0-preview.8 — 2026-11-10
+
+- Treat Windows-reported VRAM as optional telemetry for all cataloged GPUs, including one- and two-card setups.
+- Preserve PCI identity and live EFI framebuffer verification. Let UUID-bound tensor benchmarks use CUDA capacity checks when NVIDIA-SMI memory totals differ or are unavailable.
+
 ## 0.4.0-preview.7 — 2026-11-10
 
 - Open a local support report when setup, EFI verification or a tensor test fails. Reports include the failure step, NVIDIA memory and ECC telemetry, Windows and firmware versions, and selected EFI outcome details.

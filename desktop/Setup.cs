@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.7")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.8")]
 
 namespace RtxSetup
 {
@@ -21,7 +21,7 @@ namespace RtxSetup
         public string Label { get; set; }
         public string Bdf { get; set; }
         public string Device { get; set; }
-        public int MemoryMiB { get; set; }
+        public int? MemoryMiB { get; set; }
     }
 
     internal sealed class UsbDrive
@@ -629,7 +629,10 @@ namespace RtxSetup
 
             var hardware = new List<string>();
             foreach (var card in state.Targets)
-                hardware.Add(string.Format("{0}   {1:N0} MiB reported by Windows   PCI {2}   ID {3}", card.Label, card.MemoryMiB, card.Bdf, card.Device));
+            {
+                string memory = card.MemoryMiB.HasValue ? string.Format("{0:N0} MiB (driver)", card.MemoryMiB.Value) : "VRAM reading unavailable";
+                hardware.Add(string.Format("{0}   {1}   PCI {2}   ID {3}", card.Label, memory, card.Bdf, card.Device));
+            }
             if (hardware.Count > 0 && !string.IsNullOrEmpty(state.Platform)) hardware.Add(state.Platform);
             cards.Text = hardware.Count > 0 ? string.Join(Environment.NewLine, hardware) : state.InventoryError;
 
@@ -730,6 +733,12 @@ namespace RtxSetup
                 phase.Text = "Check the PC's BIOS settings";
                 next.Text = "Click Show BIOS steps. Setup will check what Windows can see after you return.";
                 nextAction = "BiosHelp";
+            }
+            if (!state.HasPackage && !string.IsNullOrWhiteSpace(state.BundleError))
+            {
+                phase.Text = "Setup files need attention";
+                next.Text = "Extract the full ZIP into a new local folder outside OneDrive or other synced folders, then open Setup from that folder.";
+                nextAction = null;
             }
             if (nextAction == "FixFastStartup") primary.Text = "Turn off Fast Startup";
             else if (nextAction == "DisableEncryption") primary.Text = "Turn off BitLocker";

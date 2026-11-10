@@ -58,14 +58,11 @@ function ConvertTo-RtxInventory {
 
     # nvidia-smi pads the 16-bit PCI segment to eight hex digits on current drivers.
     # Preserve a real nonzero segment. The EFI probe only targets function 0.
-    $nvidiaPattern = [regex]'(?i)\A[ \t]*(?:0000)?(?<bdf>[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.0),[ \t]*0x(?<device>[0-9a-f]{4})10de,[ \t]*0x(?<subsystem>[0-9a-f]{8}),[ \t]*(?<memory>[1-9][0-9]{0,9})[ \t]*\z'
+    $nvidiaPattern = [regex]'(?i)\A[ \t]*(?:0000)?(?<bdf>[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.0),[ \t]*0x(?<device>[0-9a-f]{4})10de,[ \t]*0x(?<subsystem>[0-9a-f]{8})(?:,(?<memory>[^,\r\n]*))?[ \t]*\z'
     $addresses = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $cards = foreach ($line in $NvidiaRows) {
         $row = $nvidiaPattern.Match($line)
-        $memory = 0
-        if (!$row.Success -or ![int]::TryParse($row.Groups['memory'].Value, [ref]$memory)) {
-            throw 'NVIDIA returned a malformed PCI identity or VRAM reading.'
-        }
+        if (!$row.Success) { throw 'NVIDIA returned a malformed PCI identity.' }
         $bdf = $row.Groups['bdf'].Value.ToLowerInvariant()
         $device = $row.Groups['device'].Value.ToLowerInvariant()
         $subsystem = $row.Groups['subsystem'].Value.ToLowerInvariant()
@@ -81,6 +78,10 @@ function ConvertTo-RtxInventory {
             throw 'NVIDIA and Windows disagree on the installed NVIDIA PCI device/subsystem identities.'
         }
         $windowsCounts[$key]--
+        # This Windows driver reading is display telemetry. EFI reads its own memory geometry.
+        $reportedMemory = $row.Groups['memory'].Value.Trim()
+        $capacity = 0
+        $memory = if ($reportedMemory -cmatch '\A[1-9][0-9]{0,9}\z' -and [int]::TryParse($reportedMemory, [ref]$capacity)) { $capacity }
         [pscustomobject][ordered]@{
             Bdf = $bdf
             Device = $device
@@ -97,8 +98,15 @@ function Get-RtxInventory {
     $catalog = Get-RtxInventoryCatalog
     $smi = Get-Command nvidia-smi.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (!$smi) { throw 'NVIDIA nvidia-smi.exe is required to resolve physical PCI addresses.' }
-    $nvidiaRows = @(& $smi.Source '--query-gpu=pci.bus_id,pci.device_id,pci.sub_device_id,memory.total' '--format=csv,noheader,nounits')
-    if ($LASTEXITCODE -ne 0) { throw 'NVIDIA could not read PCI identities and VRAM.' }
+    $identityFields = 'pci.bus_id,pci.device_id,pci.sub_device_id'
+    # Windows PowerShell can surface native stderr before we can check the exit code.
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $nvidiaRows = @(& $smi.Source "--query-gpu=$identityFields,memory.total" '--format=csv,noheader,nounits' 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        $nvidiaRows = @(& $smi.Source "--query-gpu=$identityFields" '--format=csv,noheader,nounits' 2>$null)
+        if ($LASTEXITCODE -ne 0) { throw 'NVIDIA could not read PCI identities.' }
+    }
     $windowsRows = @(Get-CimInstance -ClassName Win32_VideoController -Property Name, PNPDeviceID -ErrorAction Stop)
     ConvertTo-RtxInventory -NvidiaRows $nvidiaRows -WindowsRows $windowsRows -Catalog $catalog
 }
@@ -128,6 +136,8 @@ function Get-RtxCandidateUsb {
             Letter = $letter
             Label = [string]$volume.FileSystemLabel
             FreeBytes = $freeBytes
+            TotalBytes = [uint64]$volume.Size
+            FileSystem = [string]$volume.FileSystem
             VolumeId = [string]$volume.UniqueId
         }
     }

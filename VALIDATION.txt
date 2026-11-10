@@ -1,3 +1,16 @@
+Starter Kit 0.4.0 desktop preview, build 8, 2026-11-10
+
+- Exercised the RTX 30 and RTX 40 PCI catalogs and mixed-GPU inventory
+  with missing or invalid Windows memory readings. A failed combined
+  driver query retried with PCI identity fields. A failed identity query
+  still stopped setup.
+- Verified package reuse when memory telemetry changes. A changed
+  PCI subsystem still fails package verification.
+- Checked Setup's nullable memory display data and verified read-only
+  inventory on a Windows RTX 3090. The EFI binaries match build 7.
+- Exercised UUID-bound benchmark comparison with optional NVIDIA-SMI
+  memory totals. CUDA capacity and the other matched settings are required.
+
 Starter Kit 0.4.0 desktop preview, build 7, 2026-11-10
 
 - Synthetic Windows inventory and probe dispatch accepted the reported MSI

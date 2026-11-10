@@ -12,6 +12,7 @@ $script:logId='initial'
 $script:simulatedFailure=$null
 $script:benchCalls=0
 $script:driver='621.14'
+$script:memoryTotal='10240'
 $script:targets=@(
     [pscustomobject]@{Bdf='0000:01:00.0';Device='2206';Subsystem='40611458';Label='RTX 3080'},
     [pscustomobject]@{Bdf='0000:02:00.0';Device='2783';Subsystem='40e81458';Label='RTX 4070 SUPER'}
@@ -35,7 +36,7 @@ function Get-RtxMeasureSnapshots($Targets) {
         $snapshots[$card.Bdf]=[pscustomobject]@{
             'pci.bus_id'='0000'+$card.Bdf;uuid='GPU-12345678-aaaa-bbbb-cccc-1234567890'+$card.Device.Substring(2)
             name=$card.Label;driver_version=$script:driver;vbios_version='94.02.00.00.00'
-            'memory.total'='10240';'power.limit'='350.00';'power.default_limit'='350.00';'clocks.max.sm'='2100';'clocks.max.memory'='9751'
+            'memory.total'=$script:memoryTotal;'power.limit'='350.00';'power.default_limit'='350.00';'clocks.max.sm'='2100';'clocks.max.memory'='9751'
         }
     }
     return $snapshots
@@ -79,8 +80,9 @@ try {
     $script:boot=$script:boot.AddMinutes(10)
     $script:confirmed=$true
     $script:logId='verified-log'
+    $script:memoryTotal='[N/A]'
     $status=Run-Measure Status
-    Assert-Measure ($status.Cards[0].CanUnlocked -and $status.Cards[1].CanUnlocked) 'Fresh boot did not match both stock results.'
+    Assert-Measure ($status.Cards[0].CanUnlocked -and $status.Cards[1].CanUnlocked) 'Fresh boot with unavailable driver VRAM telemetry did not match both stock results.'
     $script:simulatedFailure=$script:targets[1].Bdf
     $failed=$false
     try { $null=Run-Measure Unlocked $true } catch { $failed=$_.Exception.Message -eq 'Simulated second-card failure' }

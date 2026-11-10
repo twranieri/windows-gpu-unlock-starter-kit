@@ -53,8 +53,8 @@ function Format-RtxDiagnosticMiB([string]$Value) {
 function Get-RtxDiagnosticGpu {
     $smi = Get-Command nvidia-smi.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (!$smi) { 'NVIDIA telemetry: nvidia-smi is unavailable.'; return }
-    $required = @('name','pci.bus_id','pci.device_id','pci.sub_device_id','vbios_version','driver_version','memory.total')
-    $optional = @('memory.reserved','memory.free','ecc.mode.current')
+    $required = @('name','pci.bus_id','pci.device_id','pci.sub_device_id','vbios_version','driver_version')
+    $optional = @('memory.total','memory.reserved','memory.free','ecc.mode.current')
     $rows = @(Read-RtxDiagnosticSmi $smi.Source ($required+$optional))
     $fallback = !$rows.Count
     if ($fallback) { $rows = @(Read-RtxDiagnosticSmi $smi.Source $required) }

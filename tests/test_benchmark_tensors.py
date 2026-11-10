@@ -277,20 +277,37 @@ class TensorBenchmarkTests(unittest.TestCase):
                 self.assertEqual(props.total_memory, cuda_mib * 1024 ** 2)
                 self.assertEqual(ordinal, 0)
 
-    def test_cuda_and_nvidia_memory_totals_still_must_be_positive(self):
+    def test_cuda_memory_total_still_must_be_positive(self):
         for invalid in (0, -1, None, True, "23028", 23028.0):
             with self.subTest(cuda_total=invalid):
                 torch = fake_torch()
                 torch.props.total_memory = invalid
                 with self.assertRaisesRegex(B.BenchmarkError, "Positive Torch CUDA memory total"):
                     B.validate_torch(torch, gpu())
-        for invalid in ("0", "-1"):
-            with self.subTest(nvidia_total=invalid):
-                snapshot = gpu(**{"memory.total": invalid})
-                line = ",".join(snapshot[key] for key in B.GPU_FIELDS)
-                with patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=line)), \
-                        self.assertRaisesRegex(B.BenchmarkError, "Positive GPU comparison setting unavailable: memory.total"):
-                    B.gpu_snapshot()
+
+    def test_nvidia_memory_total_is_retained_but_is_not_a_setting(self):
+        readings = []
+        for raw, stored in (("[N/A]", "[N/A]"), ("0", "0"), ("23028", "23028"),
+                            (r"C:\Users\Private", None), ("9" * 100, None)):
+            snapshot = gpu(**{"memory.total": raw})
+            line = ",".join(snapshot[key] for key in B.GPU_FIELDS)
+            with patch.object(B.subprocess, "run", return_value=SimpleNamespace(stdout=line)):
+                readings.append(B.gpu_snapshot())
+                self.assertEqual(readings[-1]["memory.total"], stored)
+        with patch.object(B, "gpu_snapshot", side_effect=readings[:3]), patch.object(B.time, "sleep"):
+            self.assertEqual(B.wait_for_idle()["memory.total"], "23028")
+
+    def test_rejected_memory_total_query_retries_required_telemetry_only(self):
+        fields = [field for field in B.GPU_FIELDS if field != "memory.total"]
+        fixture = gpu()
+        line = ",".join(fixture[key] for key in fields)
+        rejected = B.subprocess.CalledProcessError(1, "nvidia-smi")
+        with patch.object(B.subprocess, "run", side_effect=[rejected, SimpleNamespace(stdout=line)]) as query:
+            snapshot = B.gpu_snapshot()
+        self.assertIn("memory.total", query.call_args_list[0].args[0][1])
+        self.assertNotIn("memory.total", query.call_args_list[1].args[0][1])
+        self.assertIsNone(snapshot["memory.total"])
+        self.assertEqual(B.comparison_settings(snapshot), B.comparison_settings(fixture))
 
     def test_measurement_uses_fp32_out_dtype_and_checks_complete_output(self):
         args = SimpleNamespace(n=4096, warmup_seconds=2, samples=30)
@@ -400,10 +417,10 @@ class TensorBenchmarkTests(unittest.TestCase):
             torch.__version__ = "synthetic-test-only"
             torch.__config__ = SimpleNamespace(show=lambda: "synthetic build configuration")
             outputs = []
-            for label in ("stock", "unlocked"):
+            for label, raw in (("stock", "[N/A]"), ("unlocked", "23028")):
                 output = root / (label + ".json")
                 with patch.dict(B.os.environ, {}, clear=True), \
-                        patch.object(B, "gpu_snapshot", return_value=gpu()), \
+                        patch.object(B, "gpu_snapshot", return_value=gpu(**{"memory.total": raw})), \
                         patch.object(B.time, "sleep"), \
                         patch.object(B.time, "perf_counter", side_effect=[0, 2] * 12), \
                         patch.object(B.importlib, "import_module", return_value=torch):

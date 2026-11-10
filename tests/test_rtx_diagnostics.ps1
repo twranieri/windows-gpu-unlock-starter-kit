@@ -13,12 +13,14 @@ function Assert-Report([string]$Report,[string[]]$Required,[string[]]$Forbidden)
 }
 
 function Get-Command { [pscustomobject]@{Source='synthetic.exe'} }
+$script:DiagnosticTotal = '24576'
 function Read-RtxDiagnosticSmi([string]$Executable,[string[]]$Fields,[string]$Address) {
     switch ($Fields.Count) {
         10 { return }  # An older driver rejects the combined query.
-        7 { 'NVIDIA GeForce RTX 4090, 00000001:2B:00.0, 0x268410DE, 0x51041462, 95.02.18.80.74, 617.70, 24576'; return }
+        6 { 'NVIDIA GeForce RTX 4090, 00000001:2B:00.0, 0x268410DE, 0x51041462, 95.02.18.80.74, 617.70'; return }
         1 {
             if ($Address -cne '00000001:2B:00.0') { throw 'Optional telemetry must use the selected GPU BDF.' }
+            if ($Fields[0] -eq 'memory.total') { $script:DiagnosticTotal }
             if ($Fields[0] -eq 'memory.free') { '20480' }
             if ($Fields[0] -eq 'ecc.mode.current') { '[N/A]' }
         }
@@ -28,6 +30,9 @@ function Read-RtxDiagnosticSmi([string]$Executable,[string[]]$Fields,[string]$Ad
 $gpu = (Get-RtxDiagnosticGpu) -join "`n"
 Assert-Report $gpu @('PCI 0001:2b:00.0','device 10de:2684','subsystem 51041462','95.02.18.80.74',
     'VRAM total: 24576 MiB','reserved: unavailable','free: 20480 MiB','ECC: unavailable') @('synthetic.exe')
+$script:DiagnosticTotal = '[N/A]'
+$gpu = (Get-RtxDiagnosticGpu) -join "`n"
+Assert-Report $gpu @('PCI 0001:2b:00.0','device 10de:2684','617.70','VRAM total: unavailable') @('synthetic.exe')
 
 $nonce = 'b5b7342532034317a98a53dc5721558e'
 $privateId = '7f1541f6-7275-42c0-af8b-424ca2f4d4bc'

@@ -26,10 +26,13 @@ import sys
 import time
 
 
-GPU_FIELDS = ("name", "pci.bus_id", "driver_version", "vbios_version", "memory.total",
-              "power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory",
-              "utilization.gpu", "memory.used", "temperature.gpu", "power.draw", "clocks.sm", "uuid")
-SETTINGS_FIELDS = GPU_FIELDS[:9] + ("uuid",)
+IDENTITY_FIELDS = ("name", "pci.bus_id", "driver_version", "vbios_version")
+LIMIT_FIELDS = ("power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory")
+TELEMETRY_FIELDS = ("utilization.gpu", "memory.used", "temperature.gpu", "power.draw", "clocks.sm")
+SETTINGS_FIELDS = IDENTITY_FIELDS + LIMIT_FIELDS + ("uuid",)
+GPU_FIELDS = IDENTITY_FIELDS + ("memory.total",) + LIMIT_FIELDS + TELEMETRY_FIELDS + ("uuid",)
+MEMORY_UNAVAILABLE = ("n/a", "[n/a]", "not supported", "[not supported]",
+                      "unknown", "[unknown]", "unknown error", "[unknown error]")
 MODES = (("fp32_ieee", "float32", "ieee"),
          ("fp16_fp32_accumulate", "float16", "ieee"),
          ("bf16_fp32_accumulate", "bfloat16", "ieee"),
@@ -102,15 +105,28 @@ def torch_uuid(torch, value):
     return canonical_uuid(value)
 
 
-def gpu_snapshot(selected_bdf=None):
-    completed = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(GPU_FIELDS),
+def query_gpu_rows(fields):
+    completed = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(fields),
                                 "--format=csv,noheader,nounits"], check=True,
                                capture_output=True, text=True, timeout=15)
-    rows = list(csv.reader(completed.stdout.strip().splitlines()))
-    if not 1 <= len(rows) <= 2 or any(len(row) != len(GPU_FIELDS) for row in rows):
+    return list(csv.reader(completed.stdout.strip().splitlines()))
+
+
+def gpu_snapshot(selected_bdf=None):
+    fields = GPU_FIELDS
+    try:
+        rows = query_gpu_rows(fields)
+    except subprocess.CalledProcessError:
+        # Some drivers reject the combined query instead of returning N/A.
+        fields = tuple(field for field in GPU_FIELDS if field != "memory.total")
+        rows = query_gpu_rows(fields)
+    if not 1 <= len(rows) <= 2 or any(len(row) != len(fields) for row in rows):
         raise BenchmarkError("Expected one or two NVIDIA GPUs and complete telemetry")
-    inventory = [dict(zip(GPU_FIELDS, (value.strip() for value in row))) for row in rows]
+    inventory = [dict(zip(fields, (value.strip() for value in row))) for row in rows]
     for item in inventory:
+        total = item.get("memory.total", "")
+        valid_total = re.fullmatch(r"[+-]?[0-9]{1,10}", total) or total.casefold() in MEMORY_UNAVAILABLE
+        item["memory.total"] = total if valid_total else None
         item["pci.bus_id"] = canonical_bdf(item["pci.bus_id"])
         item["uuid"] = canonical_uuid(item["uuid"])
     if any(len({item[key] for item in inventory}) != len(inventory) for key in ("pci.bus_id", "uuid")):
@@ -128,9 +144,9 @@ def gpu_snapshot(selected_bdf=None):
     for field in ("name", "driver_version", "vbios_version"):
         if not gpu[field] or gpu[field] in ("N/A", "[N/A]", "Unknown") or PATH_LIKE.search(gpu[field]):
             raise BenchmarkError("Unavailable GPU identity field: " + field)
-    for field in GPU_FIELDS[4:-1]:
+    for field in TELEMETRY_FIELDS:
         number(gpu, field)
-    for field in ("memory.total", "power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory"):
+    for field in LIMIT_FIELDS:
         if number(gpu, field) <= 0:
             raise BenchmarkError("Positive GPU comparison setting unavailable: " + field)
     if not 0 <= number(gpu, "utilization.gpu") <= 100 or number(gpu, "memory.used") < 0 or number(gpu, "power.draw") < 0:
@@ -206,7 +222,7 @@ def validate_torch(torch, gpu):
     if torch.cuda.get_device_name(cuda_ordinal) != gpu["name"] or props.name != gpu["name"] or props.major < 8:
         raise BenchmarkError("This exact BF16/TF32 protocol requires the matched NVIDIA GPU with compute capability 8.0 or newer")
     # Windows can report different CUDA and NVIDIA memory totals for the same GPU.
-    # The UUID identifies the card, and the comparator checks each total across runs.
+    # The UUID identifies the card, and the comparator matches the CUDA total across runs.
     if type(props.total_memory) is not int or props.total_memory <= 0:
         raise BenchmarkError("Positive Torch CUDA memory total is unavailable")
     with torch.cuda.device(cuda_ordinal):

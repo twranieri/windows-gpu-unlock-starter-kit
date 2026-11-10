@@ -148,6 +148,44 @@ class CompareTensorsTests(unittest.TestCase):
         self.assertIn("Matched physical GPU UUID", report["identity_validation"])
         self.assertEqual(report["modes"][MODES[0]]["speed_ratio"], 2.0)
 
+    def test_uuid_pair_treats_nvidia_memory_total_as_optional_telemetry(self):
+        before, after = uuid_result("stock"), uuid_result("unlocked")
+        before["gpu_before"]["memory.total"] = "[N/A]"
+        before["gpu_pre_measurement"]["memory.total"] = "0"
+        before["trials"][0]["gpu_after"].pop("memory.total")
+        after["gpu_before"]["memory.total"] = "23028"
+        after["trials"][0]["gpu_after"]["memory.total"] = "24564"
+        report = compare_tensors.compare(before, after)
+        self.assertNotIn("memory.total", report["gpu_settings"])
+        self.assertEqual(report["nvidia_memory_total"],
+                         {"stock": {"raw": "[N/A]", "mib": None},
+                          "unlocked": {"raw": "23028", "mib": 23028}})
+
+    def test_uuid_pair_omits_invalid_total_text_from_portable_report(self):
+        before, after = uuid_result("stock"), uuid_result("unlocked")
+        before["gpu_before"]["memory.total"] = r"C:\Users\Private"
+        after["gpu_before"]["memory.total"] = "9" * 100
+        report = compare_tensors.compare(before, after)
+        self.assertEqual(report["nvidia_memory_total"],
+                         {"stock": {"raw": None, "mib": None},
+                          "unlocked": {"raw": None, "mib": None}})
+
+    def test_uuid_pair_still_refuses_changed_torch_capacity(self):
+        before, after = uuid_result("stock"), uuid_result("unlocked")
+        after["torch"]["gpu_properties"]["total_memory_bytes"] += 1024 ** 2
+        with self.assertRaisesRegex(ValueError, "Comparison metadata mismatch: torch"):
+            compare_tensors.compare(before, after)
+
+    def test_legacy_pair_requires_stable_positive_nvidia_memory_total(self):
+        for value in ("N/A", "0", "23028"):
+            with self.subTest(value=value):
+                after = copy.deepcopy(self.after)
+                for snapshot in [after["gpu_before"], after["gpu_pre_measurement"],
+                                 *(trial["gpu_after"] for trial in after["trials"])]:
+                    snapshot["memory.total"] = value
+                with self.assertRaises(ValueError):
+                    compare_tensors.compare(self.before, after)
+
     def test_mixed_schema_pair_is_refused(self):
         with self.assertRaisesRegex(ValueError, "Cannot compare legacy"):
             compare_tensors.compare(self.before, uuid_result("unlocked"))

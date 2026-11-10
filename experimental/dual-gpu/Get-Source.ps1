@@ -21,7 +21,9 @@ function Assert-UDOrdinaryPath([string]$Path,[ValidateSet('File','Directory','Ne
     while($cursor) {
         if(Test-Path -LiteralPath $cursor) {
             $item=Get-Item -LiteralPath $cursor -Force
-            if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Reparse points are refused in source, patch and destination paths.'}
+            if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){
+                throw 'A file or folder is a reparse point. Use a regular local folder outside cloud sync, symbolic links, and junctions.'
+            }
         }
         $parent=[IO.Path]::GetDirectoryName($cursor)
         if(!$parent -or $parent -eq $cursor){break}

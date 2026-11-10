@@ -46,3 +46,10 @@ output directory, extracted engine source directory, compiled desktop executable
 and destination ZIP. The packager checks binary types, matching patched sources,
 the asset recipe and archive integrity. The corresponding-source archive omits
 the upstream diagnostic kernel-driver binary and archived diagnostic reports.
+
+## Release artwork
+
+Give every GitHub release a versioned thumbnail. Save the source image in
+`docs/media/` and upload the PNG alongside the installer ZIP and checksum.
+Embed the PNG at the top of the release notes and link it to that release's ZIP.
+Check the public release page for the rendered image before sharing the link.

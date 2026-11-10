@@ -37,6 +37,15 @@ try {
     New-RtxPackageReceipt $package $targets $engine
     $receipt=Get-RtxVerifiedPackage $package $targets $engine
     if($receipt.Files.Count -ne 15){throw 'Mixed package should contain two loaders and thirteen assets.'}
+    $updatedTargets=@($targets | Select-Object *)
+    $updatedTargets[0].MemoryMiB=$null
+    $updatedTargets[1].MemoryMiB=11788
+    $reused=Get-RtxVerifiedPackage $package $updatedTargets $engine
+    if($reused.Nonce -cne $receipt.Nonce -or (Get-RtxTargetFile $reused) -cne (Get-RtxTargetFile $receipt)) {
+        throw 'Changed or missing Windows memory telemetry affected the package receipt or target manifest.'
+    }
+    $updatedTargets[0].Subsystem='38911462'
+    Assert-Refused {Get-RtxVerifiedPackage $package $updatedTargets $engine} 'Package admitted a changed subsystem with unavailable memory.'
     Assert-Refused {Get-RtxVerifiedPackage $package @($targets[0]) $engine} 'Package admitted a changed live target set.'
     Publish-RtxProbe $usb $package $receipt
     Publish-RtxProbe $usb $package $receipt

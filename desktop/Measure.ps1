@@ -11,7 +11,7 @@ param(
 )
 
 $script:RtxMeasureKit = Split-Path -Parent $PSScriptRoot
-$script:RtxMeasureSettings = @('name','pci.bus_id','driver_version','vbios_version','memory.total',
+$script:RtxMeasureSettings = @('name','pci.bus_id','driver_version','vbios_version',
     'power.limit','power.default_limit','clocks.max.sm','clocks.max.memory','uuid')
 
 function ConvertTo-RtxMeasureBdf([string]$Address) {
@@ -40,8 +40,7 @@ function Get-RtxMeasureSnapshots($Targets) {
            $uuid -cnotmatch '^gpu-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$' -or
            $uuid -ceq 'gpu-00000000-0000-0000-0000-000000000000' -or
            $snapshot['pci.device_id'] -ine ('0x'+$card[0].Device+'10de') -or
-           $snapshot['pci.sub_device_id'] -ine ('0x'+$card[0].Subsystem) -or
-           $snapshot['memory.total'] -cne [string]$card[0].MemoryMiB) {
+           $snapshot['pci.sub_device_id'] -ine ('0x'+$card[0].Subsystem)) {
             throw 'The exact physical NVIDIA GPU identities changed. Refresh Setup.'
         }
         $snapshot['pci.bus_id']='0000'+$bdf

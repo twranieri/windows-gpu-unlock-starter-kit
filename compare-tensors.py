@@ -20,9 +20,11 @@ MODES = {
     "bf16_fp32_accumulate": ("bfloat16", "ieee"),
     "tf32_fp32_accumulate": ("float32", "tf32"),
 }
-SETTINGS = ("name", "pci.bus_id", "driver_version", "vbios_version", "memory.total",
-            "power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory")
+IDENTITY_FIELDS = ("name", "pci.bus_id", "driver_version", "vbios_version")
+LIMIT_FIELDS = ("power.limit", "power.default_limit", "clocks.max.sm", "clocks.max.memory")
 TELEMETRY = ("utilization.gpu", "memory.used", "temperature.gpu", "power.draw", "clocks.sm")
+MEMORY_UNAVAILABLE = ("n/a", "[n/a]", "not supported", "[not supported]",
+                      "unknown", "[unknown]", "unknown error", "[unknown error]")
 ENVIRONMENT = ("NVIDIA_TF32_OVERRIDE", "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE",
                "CUDA_VISIBLE_DEVICES", "CUBLAS_WORKSPACE_CONFIG")
 
@@ -94,26 +96,37 @@ def physical_uuid(value):
 
 def gpu_settings(snapshot, label, idle=False, schema=2):
     require(isinstance(snapshot, dict), label + " GPU snapshot is missing")
-    for key in SETTINGS:
+    numeric_settings = (("memory.total",) if schema == 2 else ()) + LIMIT_FIELDS
+    settings = IDENTITY_FIELDS + numeric_settings
+    for key in settings:
         string(snapshot.get(key), label + "." + key)
     require(re.fullmatch(r"[0-9A-Fa-f]{1,8}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]", snapshot["pci.bus_id"]), label + " BDF invalid")
     if schema == 3:
         require(re.fullmatch(r"[0-9a-f]{8}:[0-9a-f]{2}:[01][0-9a-f]\.[0-7]", snapshot["pci.bus_id"]),
                 label + " requires a canonical full PCI BDF")
         physical_uuid(snapshot.get("uuid"))
-    for key in SETTINGS[4:] + TELEMETRY:
+    for key in numeric_settings + TELEMETRY:
         try:
             value = float(snapshot[key])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(label + "." + key + " is unavailable") from exc
         numeric(value, label + "." + key, minimum=0)
-        if key in SETTINGS[4:]:
+        if key in numeric_settings:
             require(value > 0, label + "." + key + " must be positive")
     if idle:
         require(float(snapshot["utilization.gpu"]) <= 5, label + " idle utilization gate failed")
         require(float(snapshot["memory.used"]) <= 2048, label + " idle VRAM gate failed")
         require(float(snapshot["temperature.gpu"]) <= 65, label + " idle temperature gate failed")
-    return {key: snapshot[key] for key in SETTINGS + (("uuid",) if schema == 3 else ())}
+    return {key: snapshot[key] for key in settings + (("uuid",) if schema == 3 else ())}
+
+
+def nvidia_memory_total(snapshot):
+    raw = snapshot.get("memory.total")
+    raw = raw.strip() if isinstance(raw, str) else ""
+    reading = re.fullmatch(r"[+-]?[0-9]{1,10}", raw)
+    mib = int(raw) if reading else 0
+    return {"raw": raw if reading or raw.casefold() in MEMORY_UNAVAILABLE else None,
+            "mib": mib if mib > 0 else None}
 
 
 def check_derived(actual, expected, label):
@@ -271,7 +284,7 @@ def compare(before, after):
                            "before_trial_tflops": stock[mode], "after_trial_tflops": unlocked[mode],
                            "before_trial_range_tflops": [min(stock[mode]), max(stock[mode])],
                            "after_trial_range_tflops": [min(unlocked[mode]), max(unlocked[mode])]}
-        return {"schema_version": 2, "benchmark_schema_version": before["schema_version"],
+        report = {"schema_version": 2, "benchmark_schema_version": before["schema_version"],
                 "status": "comparison_complete", "data_kind": kind,
                 "purpose": "Matched GEMM performance comparison; not proof of unlocked state or application speed",
                 "operator_labels": {"before": "stock", "after": "unlocked", "verified": False},
@@ -280,6 +293,10 @@ def compare(before, after):
                                         else "Legacy schema 2: PCI/settings match only; physical UUID was not recorded"),
                 "gpu_settings": stock_settings, "protocol": before["protocol"],
                 "script": before["script"], "modes": modes}
+        if before["schema_version"] == 3:
+            report["nvidia_memory_total"] = {"stock": nvidia_memory_total(before["gpu_before"]),
+                                             "unlocked": nvidia_memory_total(after["gpu_before"])}
+        return report
     except (KeyError, TypeError, OverflowError, AttributeError) as exc:
         raise ValueError("Missing or malformed benchmark data: " + str(exc)) from exc
 

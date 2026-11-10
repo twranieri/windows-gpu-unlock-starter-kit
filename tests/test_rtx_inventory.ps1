@@ -2,6 +2,7 @@
 # Synthetic Windows/NVIDIA and Storage inventory rows. No live hardware calls.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../rtx/Inventory.ps1')
+. (Join-Path $PSScriptRoot '../rtx/Build.ps1')
 $catalog = Get-RtxInventoryCatalog
 $script:Checks = 0
 
@@ -47,6 +48,51 @@ Assert-Inventory ($rtx4090.Device -ceq '2684' -and $rtx4090.Subsystem -ceq '5103
 $pair = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow,$adRow) -WindowsRows @($ad,$ga) -Catalog $catalog)
 Assert-Inventory ($pair.Count -eq 2 -and $pair[0].Device -ceq '2782' -and $pair[0].Family -ceq 'ad102' -and
     $pair[0].Subsystem -ceq '40e81458' -and $pair[1].Family -ceq 'ga102') 'Mixed pair was not sorted and classified by BDF.'
+foreach ($unavailable in @('[N/A]', 'N/A', '', '2147483648', '0', '-1', '24576 MiB')) {
+    $withoutMemory = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow.Replace('24576',$unavailable),$adRow) `
+        -WindowsRows @($ad,$ga) -Catalog $catalog)
+    Assert-Inventory ($withoutMemory.Count -eq 2 -and $null -eq $withoutMemory[1].MemoryMiB -and
+        $withoutMemory[1].Bdf -ceq '0000:2b:00.0' -and $withoutMemory[0].MemoryMiB -eq 12288 -and
+        ((Get-RtxBuildFamilies $withoutMemory) -join ',') -ceq '40,30') "Optional memory value '$unavailable' affected mixed GPU identity or build routing."
+}
+
+& {
+    $queries = [Collections.Generic.List[string]]::new()
+    $identityQuery = '--query-gpu=pci.bus_id,pci.device_id,pci.sub_device_id'
+    $identityFails = $false
+    function Get-Command {
+        [CmdletBinding()]
+        param([string]$Name,[string]$CommandType)
+        if ($Name -ne 'nvidia-smi.exe' -or $CommandType -ne 'Application') { throw 'Unexpected command discovery.' }
+        [pscustomobject]@{Source='Invoke-TestNvidiaSmi'}
+    }
+    function Get-CimInstance {
+        [CmdletBinding()]
+        param([string]$ClassName,[string[]]$Property)
+        if ($ClassName -ne 'Win32_VideoController') { throw 'Unexpected Windows inventory call.' }
+        @($ad,$ga)
+    }
+    function Invoke-TestNvidiaSmi([string]$Query,[string]$Format) {
+        $queries.Add($Query)
+        if ($Format -cne '--format=csv,noheader,nounits') { throw 'Unexpected NVIDIA query format.' }
+        if ($Query -ceq $identityQuery -and !$identityFails) {
+            $global:LASTEXITCODE = 0
+            $adRow.Substring(0,$adRow.LastIndexOf(','))
+            $gaRow.Substring(0,$gaRow.LastIndexOf(','))
+        } else {
+            & (Join-Path $env:SystemRoot 'System32/cmd.exe') /d /c 'echo Unsupported query 1>&2 & exit /b 1'
+        }
+    }
+
+    $fallback = @(Get-RtxInventory)
+    Assert-Inventory (($queries -join '|') -ceq "$identityQuery,memory.total|$identityQuery" -and
+        $fallback.Count -eq 2 -and $null -eq $fallback[0].MemoryMiB -and $null -eq $fallback[1].MemoryMiB -and
+        ((Get-RtxBuildFamilies $fallback) -join ',') -ceq '40,30') 'Failed telemetry query did not retry with exact PCI identity fields only.'
+    $identityFails = $true
+    $failure = $null
+    try { $null = Get-RtxInventory } catch { $failure = $_ }
+    Assert-Inventory ($failure.Exception.Message -eq 'NVIDIA could not read PCI identities.') 'Failed PCI identity query was accepted.'
+}
 
 $gaTwin = New-DisplayRow '2204' '147D10DE' 'three'
 $twins = @(ConvertTo-RtxInventory -NvidiaRows @($gaRow, $gaRow.Replace('00000000:2B', '00001234:02')) -WindowsRows @($gaTwin,$ga) -Catalog $catalog)
@@ -58,9 +104,11 @@ foreach ($series in @(30,40)) {
     foreach ($entry in $table.devices.PSObject.Properties) {
         $device = $entry.Name
         $family = if ($series -eq 40 -or $device -cin @('2822','28a3','28e3')) { 'ad102' } else { 'ga102' }
-        $card = ConvertTo-RtxInventory -NvidiaRows @("0000:02:00.0, 0x${device}10de, 0x12341043, 8192") `
+        $card = ConvertTo-RtxInventory -NvidiaRows @("0000:02:00.0, 0x${device}10de, 0x12341043, [N/A]") `
             -WindowsRows @(New-DisplayRow $device '12341043' 'one') -Catalog $catalog
-        Assert-Inventory ($card.Device -ceq $device -and $card.Family -ceq $family) "Wrong asset family for device $device."
+        $build = if ($family -ceq 'ad102') { '40' } else { '30' }
+        Assert-Inventory ($card.Device -ceq $device -and $card.Family -ceq $family -and $null -eq $card.MemoryMiB -and
+            (Get-RtxBuildFamilies @($card)) -ceq $build) "Device $device did not route correctly with unavailable VRAM."
     }
 }
 
@@ -84,11 +132,10 @@ Assert-Refused @($gaRow) @([pscustomobject]@{ Name = 'NVIDIA Display Adapter'; P
 foreach ($device in @('1e04','24b0','25a7','2b85','ffff')) {
     Assert-Refused @($gaRow.Replace('2204',$device)) @(New-DisplayRow $device '147d10de' 'one') 'outside the RTX 30/40 catalogs'
 }
-foreach ($badRow in @($gaRow.Replace('220410DE','22041002'), $gaRow.Replace('24576','[N/A]'),
-    $gaRow.Replace('24576','2147483648'), $gaRow.Replace('24576','0'), $gaRow.Replace('24576','24576 MiB'),
+foreach ($badRow in @($gaRow.Replace('220410DE','22041002'), "$gaRow, extra",
     $gaRow.Replace('00000000:','00010000:'), $gaRow.Replace(':00.0',':20.0'),
     $gaRow.Replace(':00.0',':00.1'), $gaRow.Replace(':00.0',':00.7'), $gaRow.Replace(':00.0',':00.8'))) {
-    Assert-Refused @($badRow) @($ga) 'malformed PCI identity or VRAM'
+    Assert-Refused @($badRow) @($ga) 'malformed PCI identity'
 }
 foreach ($badSubsystem in @('00000000', '000010DE', 'FFFF10DE', '147D0000', '147DFFFF')) {
     Assert-Refused @($gaRow.Replace('147D10DE',$badSubsystem)) @(New-DisplayRow '2204' $badSubsystem 'one') 'invalid subsystem'
