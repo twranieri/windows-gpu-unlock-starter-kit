@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.8")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.9")]
 
 namespace RtxSetup
 {
@@ -127,12 +127,13 @@ namespace RtxSetup
         private readonly Button primary = MakeButton("Prepare probe USB", true);
         private readonly Button refresh = MakeButton("Refresh", false);
         private readonly Button restore = MakeButton("Restore probe", false);
-        private readonly Button format = MakeButton("Format USB", false);
         private readonly Button offline = MakeButton("Offline inputs", false);
         private readonly Button bootLog = MakeButton("Open USB log", false);
         private readonly Button diagnostics = MakeButton("Open diagnostics", false);
         private readonly Button benchmark = MakeButton("Tensor benchmarks", false);
         private const string ResumeOptionText = "Reopen Setup at next sign-in after a setup change";
+        private static readonly string BuildVersion = typeof(SetupWindow).Assembly.GetName().Version.ToString();
+        private const string BuildMismatch = "Setup executable and scripts are from different builds.";
         private readonly CheckBox reopen = new CheckBox
         {
             Text = ResumeOptionText,
@@ -161,7 +162,7 @@ namespace RtxSetup
         public SetupWindow(string resumeVolume)
         {
             requestedVolume = resumeVolume;
-            Text = "Windows GPU Unlock Setup";
+            Text = "Windows GPU Unlock Setup " + BuildVersion;
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.Dpi;
             ClientSize = new Size(1060, 770);
@@ -229,7 +230,7 @@ namespace RtxSetup
             phase.Font = new Font("Segoe UI Semibold", 13);
             AddText(details, next, "", Ink, 108);
             var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true };
-            actions.Controls.AddRange(new Control[] { primary, refresh, restore, format, benchmark, offline, bootLog, diagnostics });
+            actions.Controls.AddRange(new Control[] { primary, refresh, restore, benchmark, offline, bootLog, diagnostics });
             details.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
             details.Controls.Add(actions);
             AddText(details, cacheLabel, "First-time setup downloads pinned firmware inputs. The app verifies them before use.", Muted, 38);
@@ -253,7 +254,8 @@ namespace RtxSetup
 
             primary.Click += async delegate
             {
-                if (nextAction == "Help") await RefreshHelp(ShowBootHelp);
+                if (nextAction == "ExtractHelp") ShowExtractionSteps(this);
+                else if (nextAction == "Help") await RefreshHelp(ShowBootHelp);
                 else if (nextAction == "BiosHelp") await RefreshHelp(ShowBiosHelp);
                 else if (nextAction != null) await RunFlow(nextAction);
             };
@@ -270,7 +272,6 @@ namespace RtxSetup
             decryptRefresh.Tick += async delegate { await RunFlow(null); };
             refresh.Click += async delegate { await RunFlow(null, true); };
             restore.Click += async delegate { await RunFlow("RestoreProbe"); };
-            format.Click += async delegate { await RunFlow("FormatUsb"); };
             benchmark.Click += delegate { OpenBenchmarks(); };
             var offlineMenu = new ContextMenuStrip();
             offline.ContextMenuStrip = offlineMenu;
@@ -362,15 +363,14 @@ namespace RtxSetup
             primary.Enabled = !busy && nextAction != null;
             refresh.Enabled = !busy;
             drives.Enabled = !busy;
-            offline.Enabled = !busy;
-            benchmark.Enabled = !busy;
+            bool usableSetup = state != null && (state.HasPackage || string.IsNullOrWhiteSpace(state.BundleError));
+            offline.Enabled = !busy && usableSetup;
+            benchmark.Enabled = !busy && usableSetup;
             reopen.Enabled = !busy && !resumeDisarmed;
             automaticBenchmarks.Enabled = !busy;
             restore.Visible = state != null && state.HasPackage &&
                 (state.MediaState == "Recoverable" || state.MediaState == "UnlockStaged" || state.MediaState == "UnlockLogged");
             restore.Enabled = !busy;
-            format.Visible = CanFormatBlockedFat32(state, FindFormatDrive(state, drives.SelectedItem as UsbDrive), KitTargetListMissing);
-            format.Enabled = !busy;
             bootLog.Enabled = !busy && state != null && state.HasLog;
             diagnostics.Enabled = !busy;
             UseWaitCursor = busy;
@@ -384,7 +384,8 @@ namespace RtxSetup
             if (action == "FormatUsb")
             {
                 var eligible = FindFormatDrive(state, usb);
-                if (eligible == null || (eligible.FileSystem == "FAT32" && !CanFormatBlockedFat32(state, eligible, KitTargetListMissing)))
+                if (nextAction != "FormatUsb" || eligible == null || !HasVerifiedBootPrerequisites(state) ||
+                    (eligible.FileSystem == "FAT32" && !CanFormatBlockedFat32(state, eligible, KitTargetListMissing)))
                 {
                     MessageBox.Show(this, "The selected USB is no longer eligible to format. Refresh and select the intended drive.",
                         Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -467,6 +468,7 @@ namespace RtxSetup
                 nextAction = null;
                 phase.Text = "Setup check failed";
                 next.Text = error.Message;
+                if (error.Message == BuildMismatch) OfferExtractionHelp(BuildMismatch);
                 Append(error.Message);
                 unexpectedFailure = failure ?? error.Message;
             }
@@ -607,8 +609,13 @@ namespace RtxSetup
         private async Task<KitStatus> ReadStatus(string letter)
         {
             var result = await RunBackend("Status", letter, null);
-            if (result.ExitCode != 0) throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(result.Error) ? "Setup check exited with code " + result.ExitCode : result.Error.Trim());
+            if (result.ExitCode != 0)
+            {
+                string error = result.Error ?? "";
+                if (error.Contains(BuildMismatch) || (error.Contains("DesktopBuild") && error.Contains("NamedParameterNotFound")))
+                    throw new InvalidOperationException(BuildMismatch);
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "Setup check exited with code " + result.ExitCode : error.Trim());
+            }
             var status = new JavaScriptSerializer().Deserialize<KitStatus>(result.Output);
             if (status == null || status.Targets == null || status.Drives == null || status.BootProblems == null)
                 throw new InvalidOperationException("The setup engine returned an incomplete status.");
@@ -702,10 +709,11 @@ namespace RtxSetup
             if (nextAction != "Help" && (selected == null || string.IsNullOrEmpty(selected.VolumeId))) nextAction = null;
             bool canConfigure = state.Targets.Length > 0 && string.IsNullOrEmpty(state.InventoryError) &&
                 (state.HasPackage || string.IsNullOrEmpty(state.BundleError));
-            if (canConfigure && eligibleFormat != null && eligibleFormat.FileSystem != "FAT32")
+            if (canConfigure && eligibleFormat != null && HasVerifiedBootPrerequisites(state) &&
+                (eligibleFormat.FileSystem != "FAT32" || CanFormatBlockedFat32(state, eligibleFormat, KitTargetListMissing)))
             {
-                phase.Text = "Format this USB as FAT32";
-                next.Text = "This USB needs FAT32. Back up its files, then click Format USB. Setup will check the drive again afterward.";
+                phase.Text = eligibleFormat.FileSystem == "FAT32" ? "Back up and clear this USB" : "Format this USB as FAT32";
+                next.Text = "Back up every file and verify the copy first. Then click Format USB and confirm the drive letter. Formatting erases the selected USB.";
                 nextAction = "FormatUsb";
             }
             if (canConfigure && state.CanFixFastStartup)
@@ -736,13 +744,12 @@ namespace RtxSetup
             }
             if (!state.HasPackage && !string.IsNullOrWhiteSpace(state.BundleError))
             {
-                phase.Text = "Setup files need attention";
-                next.Text = "Extract the full ZIP into a new local folder outside OneDrive or other synced folders, then open Setup from that folder.";
-                nextAction = null;
+                OfferExtractionHelp("Setup could not verify its files. Click Show extraction steps for a clean local copy.");
             }
             if (nextAction == "FixFastStartup") primary.Text = "Turn off Fast Startup";
             else if (nextAction == "DisableEncryption") primary.Text = "Turn off BitLocker";
             else if (nextAction == "BiosHelp") primary.Text = "Show BIOS steps";
+            else if (nextAction == "ExtractHelp") primary.Text = "Show extraction steps";
             else if (nextAction == "FormatUsb") primary.Text = "Format USB";
             else if (nextAction == "Prepare") primary.Text = "Prepare probe USB";
             else if (nextAction == "StageUnlock") primary.Text = "Stage unlock USB";
@@ -755,6 +762,23 @@ namespace RtxSetup
             else if (selected == null) primary.Text = "Select a USB drive";
             else primary.Text = "Setup action unavailable";
             foreach (string blocker in blockers) Append(blocker);
+        }
+
+        private void OfferExtractionHelp(string message)
+        {
+            phase.Text = "Setup files need attention";
+            next.Text = message;
+            nextAction = "ExtractHelp";
+            primary.Text = "Show extraction steps";
+        }
+
+        internal static void ShowExtractionSteps(IWin32Window owner)
+        {
+            MessageBox.Show(owner,
+                "1. Close all copies of Setup and download the full installer ZIP.\r\n\r\n" +
+                "2. In File Explorer, enter %LOCALAPPDATA% in the address bar and create a new folder there.\r\n\r\n" +
+                "3. Right-click the ZIP, choose Extract All, and select that new folder. Open Windows GPU Unlock Setup.exe from the extracted files.",
+                "Extract the full Setup ZIP", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private async Task RefreshHelp(Action show)
@@ -885,7 +909,7 @@ namespace RtxSetup
         {
             var executable = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
             var command = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
-                Quote(Path.Combine(root, "RTX.ps1")) + " -Desktop -Action " + action;
+                Quote(Path.Combine(root, "RTX.ps1")) + " -Desktop -DesktopBuild " + BuildVersion + " -Action " + action;
             if (!string.IsNullOrEmpty(letter))
             {
                 if (letter.Length != 1 || letter[0] < 'D' || letter[0] > 'Z') throw new ArgumentException("Invalid USB letter.");
@@ -1368,8 +1392,7 @@ namespace RtxSetup
             }
             if (!File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RTX.ps1")))
             {
-                MessageBox.Show("Right-click the downloaded ZIP and choose Extract All. Open Windows GPU Unlock Setup.exe from the extracted folder.",
-                    "Extract the whole ZIP first", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                SetupWindow.ShowExtractionSteps(null);
                 return;
             }
             bool first;

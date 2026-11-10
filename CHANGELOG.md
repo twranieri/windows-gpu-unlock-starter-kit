@@ -1,5 +1,11 @@
 # Changes
 
+## 0.4.0-preview.9 — 2026-11-10
+
+- Show the Setup build in the window title and require the executable and desktop backend to match.
+- Offer step-by-step extraction help when Setup files cannot be verified.
+- Offer formatting as the next guided step after Windows checks pass. Formatting still requires the selected USB to qualify and the user to confirm.
+
 ## 0.4.0-preview.8 — 2026-11-10
 
 - Treat Windows-reported VRAM as optional telemetry for all cataloged GPUs, including one- and two-card setups.

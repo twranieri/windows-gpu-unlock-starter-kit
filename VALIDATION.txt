@@ -1,3 +1,13 @@
+Starter Kit 0.4.0 desktop preview, build 9, 2026-11-10
+
+- Windows fixtures verified the order for recovery: extract into a fresh
+  folder, turn off Fast Startup, then format the eligible USB.
+- Tested both directions of an executable/backend build mismatch and
+  ordinary command-line use. Mismatched desktop calls stopped before
+  loading the backend modules.
+- Reused the verified Preview 8 EFI and asset binaries. A physical
+  unlock test on the reported Z890 system is pending.
+
 Starter Kit 0.4.0 desktop preview, build 8, 2026-11-10
 
 - Exercised the RTX 30 and RTX 40 PCI catalogs and mixed-GPU inventory

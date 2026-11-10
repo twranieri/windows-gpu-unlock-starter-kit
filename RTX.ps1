@@ -9,11 +9,15 @@ param(
     [string]$Cargo='cargo',
     [string]$Inputs,
     [switch]$Desktop,
+    [string]$DesktopBuild,
     [switch]$UsePrebuilt,
     [switch]$Execute
 )
 
 $ErrorActionPreference='Stop'
+if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.9') {
+    throw 'Setup executable and scripts are from different builds. Extract the whole matching ZIP into a new local folder and open Setup there.'
+}
 if(!$WorkDirectory){$WorkDirectory=Join-Path $PSScriptRoot '.local/rtx'}
 . (Join-Path $PSScriptRoot 'rtx/Inventory.ps1')
 . (Join-Path $PSScriptRoot 'rtx/Build.ps1')

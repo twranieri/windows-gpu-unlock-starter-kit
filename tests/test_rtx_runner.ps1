@@ -1,6 +1,42 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Mocked entry point: does not enumerate or write physical media.
 $ErrorActionPreference='Stop'
+& {
+    $scratch=Join-Path ([IO.Path]::GetTempPath()) ('rtx-build-gate-'+[guid]::NewGuid().ToString('N'))
+    $modules=Join-Path $scratch 'rtx'
+    [void][IO.Directory]::CreateDirectory($modules)
+    $runner=Join-Path $scratch 'RTX.ps1'
+    $stub=Join-Path $modules 'Inventory.ps1'
+    try {
+        [IO.File]::Copy((Join-Path $PSScriptRoot '../RTX.ps1'),$runner)
+        [IO.File]::WriteAllText($stub,"throw 'Reached synthetic module import.'")
+        $manifest=[xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot '../desktop/Setup.manifest') -Raw)
+        $build=[string]$manifest.assembly.assemblyIdentity.version
+        $source=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../desktop/Setup.cs') -Raw
+        if(!$build -or !$source.Contains('AssemblyVersion("'+$build+'")')){throw 'Setup build versions disagree.'}
+        $expected='Setup executable and scripts are from different builds.'
+        $ErrorActionPreference='Continue'
+        $PSNativeCommandUseErrorActionPreference=$false
+        $legacyOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Desktop -Action Status 2>&1 | Out-String
+        if($LASTEXITCODE -eq 0 -or !$legacyOutput.Contains($expected) -or $legacyOutput.Contains('Reached synthetic module import.')){
+            throw 'An older desktop executable reached the backend modules.'
+        }
+        $wrongOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Desktop -DesktopBuild 0.0.0.0 -Action FormatUsb -Execute 2>&1 | Out-String
+        if($LASTEXITCODE -eq 0 -or !$wrongOutput.Contains($expected) -or $wrongOutput.Contains('Reached synthetic module import.')){
+            throw 'A mismatched desktop executable reached the backend modules.'
+        }
+        $matchingOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Desktop -DesktopBuild $build -Action Status 2>&1 | Out-String
+        if(!$matchingOutput.Contains('Reached synthetic module import.')){throw 'The matching desktop executable was refused.'}
+        $cliOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Action Check 2>&1 | Out-String
+        if(!$cliOutput.Contains('Reached synthetic module import.')){throw 'The ordinary CLI was refused.'}
+    } finally {
+        [IO.File]::Delete($stub)
+        [IO.File]::Delete($runner)
+        [IO.Directory]::Delete($modules)
+        [IO.Directory]::Delete($scratch)
+    }
+}
+'PASS desktop build matching before backend modules load, with ordinary CLI unaffected.'
 . (Join-Path $PSScriptRoot '../RTX.ps1')
 function Get-RtxInventory {
     [pscustomobject]@{Label='GeForce RTX 4090';Bdf='0000:01:00.0';Device='2684';Subsystem='51031462';Family='ad102';MemoryMiB=23028}
