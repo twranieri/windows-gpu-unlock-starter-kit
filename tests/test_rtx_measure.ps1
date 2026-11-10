@@ -11,6 +11,7 @@ $script:confirmed=$false
 $script:logId='initial'
 $script:simulatedFailure=$null
 $script:benchCalls=0
+$script:comparedStockPaths=@()
 $script:provisionCalls=0
 $script:runtimeInstalled=$false
 $script:admin=$false
@@ -73,6 +74,7 @@ function Invoke-RtxMeasurePython([string]$Exe,[string[]]$Arguments,[switch]$Quie
             summary=@{fp32_ieee=@{median_tflops=20}}
         }
     }else{
+        $script:comparedStockPaths+=$Arguments[2]
         $after=Read-RtxMeasureJson $Arguments[4]
         $data=[ordered]@{status='comparison_complete';gpu_settings=$after.gpu_before;modes=@{
             fp16_fp32_accumulate=@{before_median_tflops=40;after_median_tflops=60;speed_ratio=1.5;percent_gain=50}
@@ -81,11 +83,21 @@ function Invoke-RtxMeasurePython([string]$Exe,[string[]]$Arguments,[switch]$Quie
     [IO.File]::WriteAllText($Arguments[6],($data | ConvertTo-Json -Depth 7))
 }
 function Assert-Measure($Value,[string]$Message){if(!$Value){throw $Message}}
-function Run-Measure([string]$Mode,[bool]$Run=$false,[string]$Gpu=''){
-    Invoke-RtxDesktopMeasure $Mode $script:pythonPath $Gpu 'E' 'synthetic-id' $Run
+function Run-Measure([string]$Mode,[bool]$Run=$false,[string]$Gpu='',[bool]$RefreshStock=$false){
+    Invoke-RtxDesktopMeasure $Mode $script:pythonPath $Gpu 'E' 'synthetic-id' $Run $RefreshStock
 }
 
 try {
+    foreach($mode in @('Status','Provision','Unlocked')){
+        $refused=$false
+        try {$null=Run-Measure $mode $true '' $true}
+        catch {$refused=$_.Exception.Message -eq 'RefreshStock requires Stock with Execute.'}
+        Assert-Measure $refused "RefreshStock was accepted for $mode."
+    }
+    $refused=$false
+    try {$null=Run-Measure Stock $false '' $true}
+    catch {$refused=$_.Exception.Message -eq 'RefreshStock requires Stock with Execute.'}
+    Assert-Measure ($refused -and !$script:benchCalls -and !(Test-Path $script:resultsRoot)) 'RefreshStock without Execute changed measurement state.'
     $status=Run-Measure Status
     Assert-Measure ($status.Cards.Count -eq 2 -and !$status.Cards[0].HasStock -and $status.CanProvision -and
         !$script:provisionCalls -and !(Test-Path $script:resultsRoot)) 'Status must be read-only and report provision eligibility.'
@@ -120,8 +132,24 @@ try {
     $result=Run-Measure Stock $true
     Assert-Measure ($result.Status -ceq 'Complete' -and $result.Results.Count -eq 2 -and $script:benchCalls -eq 2) 'Stock run did not publish both cards.'
     foreach($card in $result.Results){Assert-Measure (Test-Path -LiteralPath $card.StockPath) 'Stock file missing.'}
+    $originalStock=$result
+    $originalFiles=@(Get-ChildItem -LiteralPath $script:resultsRoot -Recurse -File | ForEach-Object {
+        [pscustomobject]@{Path=$_.FullName;Sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}
+    })
     $again=Run-Measure Stock $true
     Assert-Measure ($again.Status -ceq 'AlreadyComplete' -and $script:benchCalls -eq 2) 'A repeat automatically overwrote a stock result.'
+    $fresh=Run-Measure Stock $true '' $true
+    Assert-Measure ($fresh.Status -ceq 'Complete' -and $fresh.Results.Count -eq 2 -and $script:benchCalls -eq 4 -and
+        @(Get-ChildItem -LiteralPath $script:resultsRoot -Directory).Count -eq 2) 'Fresh stock did not publish a new baseline for both GPUs.'
+    for($index=0;$index -lt $fresh.Results.Count;$index++){
+        Assert-Measure ($fresh.Results[$index].StockPath -cne $originalStock.Results[$index].StockPath) 'Fresh stock reused the original result path.'
+    }
+    foreach($file in $originalFiles){
+        Assert-Measure ((Test-Path -LiteralPath $file.Path) -and
+            (Get-FileHash -LiteralPath $file.Path).Hash -ceq $file.Sha256) 'Fresh stock changed an earlier run.'
+    }
+    $again=Run-Measure Stock $true
+    Assert-Measure ($again.Status -ceq 'AlreadyComplete' -and $script:benchCalls -eq 4) 'A default repeat overwrote the refreshed stock result.'
 
     $script:boot=$script:boot.AddMinutes(10)
     $script:confirmed=$true
@@ -138,16 +166,28 @@ try {
     $script:simulatedFailure=$script:targets[1].Bdf
     $failed=$false
     try { $null=Run-Measure Unlocked $true } catch { $failed=$_.Exception.Message -eq 'Simulated second-card failure' }
-    Assert-Measure ($failed -and @(Get-ChildItem -LiteralPath $script:resultsRoot -Force).Count -eq 1) 'Failure published incomplete results or removed stock.'
+    Assert-Measure ($failed -and @(Get-ChildItem -LiteralPath $script:resultsRoot -Force).Count -eq 2) 'Failure published incomplete results or removed stock.'
 
     $script:simulatedFailure=$null
     $result=Run-Measure Unlocked $true
     Assert-Measure ($result.Status -ceq 'Complete' -and $result.Results.Count -eq 2 -and $result.HasComparisonForBoot) 'Successful comparison did not publish both cards.'
     foreach($card in $result.Results){Assert-Measure (Test-Path -LiteralPath $card.ComparisonPath) 'Comparison file missing.'}
+    foreach($card in $result.Results){
+        $expected=@($fresh.Results | Where-Object Bdf -CEQ $card.Bdf)[0].StockPath
+        Assert-Measure ($card.StockPath -ceq $expected -and $script:comparedStockPaths -ccontains $expected) 'Comparison did not use the newest stock baseline.'
+    }
     $calls=$script:benchCalls
     $again=Run-Measure Unlocked $true
     Assert-Measure ($again.Status -ceq 'AlreadyComplete' -and $script:benchCalls -eq $calls) 'The same boot triggered a second comparison.'
 
+    $script:confirmed=$false
+    $detached=Run-Measure Status
+    Assert-Measure (!$detached.Cards[0].CanStock -and !$detached.CanProvision -and !$detached.HasComparisonForBoot) 'Removing the USB turned a known post-unlock session into stock.'
+    $refused=$false
+    try {$null=Invoke-RtxDesktopMeasure Stock $script:pythonPath '' '' '' $true $true}
+    catch {$refused=$_.Exception.Message -match 'saved post-unlock'}
+    Assert-Measure ($refused -and $script:benchCalls -eq $calls) 'A known post-unlock Windows boot recorded a fresh stock baseline without its USB.'
+    $script:confirmed=$true
     $script:boot=$script:boot.AddMinutes(1)
     $stale=Run-Measure Status
     Assert-Measure (!$stale.HasComparisonForBoot -and !$stale.Cards[0].CanUnlocked -and !$stale.Cards[0].ComparisonPath) 'An old EFI log was accepted on a later boot.'
@@ -155,7 +195,7 @@ try {
     $script:driver='622.01'
     $changed=Run-Measure Status
     Assert-Measure (!$changed.Cards[0].HasStock -and !$changed.Cards[0].CanUnlocked) 'A changed driver reused stock measurements.'
-    'PASS desktop benchmark runner: guarded provisioning, exact interpreter, two-card stock, atomic retry, fresh EFI evidence, deduplication and changed settings.'
+    'PASS desktop benchmark runner: guarded provisioning, exact interpreter, immutable stock refresh, newest-baseline comparison, atomic retry, fresh EFI evidence, deduplication and changed settings.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($testRoot)
     $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar

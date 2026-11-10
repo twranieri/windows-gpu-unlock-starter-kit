@@ -1,5 +1,13 @@
 # Changes
 
+## 0.4.0-preview.14 — 2026-11-10
+
+- Fix stock-result validation so a finished workload can publish its baseline. The validator now passes the required path object to the comparison loader.
+- Complete the requested before-and-after flow only after every detected GPU has a saved comparison, or the user explicitly finishes without the remaining results. Clear the sign-in shortcut after that decision.
+- Offer an after-test retry on Refresh or reopening Setup. Continue testing other eligible GPUs when one card's after test fails.
+- Make manual **Run stock test** record a fresh baseline while retaining earlier runs. Automatic tests reuse compatible saved stock results.
+- Exercise stock validation and comparison with the real Python code through the Windows launcher, using simulated GPU, USB and EFI states.
+
 ## 0.4.0-preview.13 — 2026-11-10
 
 - Label the first USB boot as read-only and the second as unlock. Setup shows the next action from the recorded boot result.

@@ -7,7 +7,8 @@ param(
     [string]$Gpu,
     [ValidatePattern('^[D-Zd-z]$')][string]$Drive,
     [string]$VolumeId,
-    [switch]$Execute
+    [switch]$Execute,
+    [switch]$RefreshStock
 )
 
 $script:RtxMeasureKit = Split-Path -Parent $PSScriptRoot
@@ -204,7 +205,11 @@ function Invoke-RtxMeasurePython([string]$Exe,[string[]]$Arguments,[switch]$Quie
 }
 
 function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string]$RequestedGpu,
-                                 [string]$SelectedDrive,[string]$SelectedVolume,[bool]$DoExecute) {
+                                 [string]$SelectedDrive,[string]$SelectedVolume,[bool]$DoExecute,
+                                 [bool]$RefreshStock=$false) {
+    if($RefreshStock -and ($Mode -ne 'Stock' -or !$DoExecute)){
+        throw 'RefreshStock requires Stock with Execute.'
+    }
     . (Join-Path $script:RtxMeasureKit 'RTX.ps1')
     $targets=@(Get-RtxInventory)
     $snapshots=Get-RtxMeasureSnapshots $targets
@@ -226,6 +231,12 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
         }
     $root=Get-RtxMeasureRoot
     $history=@(Get-RtxMeasureHistory $root)
+    $knownUnlockedBoot=@($history | Where-Object {
+        $_.Record.Mode -ceq 'unlocked' -and $_.Record.BootId -ceq $bootId
+    }).Count -gt 0
+    if($knownUnlockedBoot -and !$provisionBlock){
+        $provisionBlock='A post-unlock test was saved during this Windows boot. Start Windows directly through Windows Boot Manager before setting up a runtime or recording stock.'
+    }
     $bench=Join-Path $script:RtxMeasureKit 'benchmark-tensors.py'
     $compare=Join-Path $script:RtxMeasureKit 'compare-tensors.py'
     $scriptHash=(Get-FileHash -LiteralPath (Get-RtxMeasureFile $bench).FullName).Hash
@@ -272,10 +283,11 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
                 $result=$null
             }
         }
-        $canStock=[bool]($exe -and !$evidence.Confirmed)
+        $canStock=[bool]($exe -and !$evidence.Confirmed -and !$knownUnlockedBoot)
         $canUnlocked=[bool]($hasStock -and !$result -and $evidence.Confirmed -and !$logUsedBefore -and
             [long]$saved.Record.BootId -lt [long]$bootId)
         $message=if(!$exe){'Choose a Python installation with CUDA-enabled PyTorch.'}
+            elseif($knownUnlockedBoot -and !$evidence.Confirmed){'A post-unlock test was saved during this Windows boot. Reconnect the unlock USB to review it, or start Windows Boot Manager directly before recording stock.'}
             elseif($logUsedBefore){'This EFI log was already used on a different Windows boot.'}
             elseif($result){'A matched comparison is saved for this Windows boot.'}
             elseif($evidence.Confirmed -and !$canUnlocked){'A matching stock result from an earlier Windows boot is required.'}
@@ -318,8 +330,8 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
             throw 'Each selected GPU needs matching stock measurements from an earlier Windows boot.'
         }
     } else {
-        if($evidence.Confirmed){throw 'The current Windows boot has verified unlock evidence. Boot normally before measuring stock.'}
-        if(!$RequestedGpu){
+        if($evidence.Confirmed -or $knownUnlockedBoot){throw 'The current Windows boot has verified unlock evidence or a saved post-unlock test. Boot normally before measuring stock.'}
+        if(!$RequestedGpu -and !$RefreshStock){
             $selected=@($selected | Where-Object {!$_.HasStock})
             if(!$selected.Count){
                 $status.Status='AlreadyComplete';$status.Message='Matching stock measurements are already saved.'
@@ -358,7 +370,7 @@ function Invoke-RtxDesktopMeasure([string]$Mode,[string]$RequestedPython,[string
             $entry=[ordered]@{Key=$key;ResultSha256=(Get-FileHash -LiteralPath $raw).Hash;ComparisonSha256=$null}
             $row=[ordered]@{Bdf=$card.Bdf;Label=$card.Label;StockPath=$null;UnlockedPath=$null;ComparisonPath=$null;Modes=$null}
             if($Mode -eq 'Stock'){
-                $validate="import runpy,sys; m=runpy.run_path(sys.argv[1]); m['validate'](m['load_result'](sys.argv[2]),'stock')"
+                $validate="import pathlib,runpy,sys; m=runpy.run_path(sys.argv[1]); m['validate'](m['load_result'](pathlib.Path(sys.argv[2])),'stock')"
                 Invoke-RtxMeasurePython $exe @('-c',$validate,$compare,$raw) -Quiet
                 $row.StockPath=Join-Path $finalFolder 'stock.json'
                 $row.Modes=$data.summary
@@ -431,7 +443,7 @@ if($MyInvocation.InvocationName -ne '.'){
     try {
         try {$locked=$mutex.WaitOne(0)} catch [Threading.AbandonedMutexException] {$locked=$true}
         if(!$locked){throw 'Another tensor benchmark or status check is in progress.'}
-        Invoke-RtxDesktopMeasure $Action $Python $Gpu $Drive $VolumeId ([bool]$Execute) | ConvertTo-Json -Depth 12
+        Invoke-RtxDesktopMeasure $Action $Python $Gpu $Drive $VolumeId ([bool]$Execute) ([bool]$RefreshStock) | ConvertTo-Json -Depth 12
     } catch {
         [pscustomobject]@{Status='Blocked';Message=$_.Exception.Message;Python=$null;ResultsDirectory=$null
             BootId=$null;BootConfirmed=$false;HasComparisonForBoot=$false;Cards=@();Results=@()

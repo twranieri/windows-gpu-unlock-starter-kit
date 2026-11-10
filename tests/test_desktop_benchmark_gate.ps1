@@ -24,7 +24,7 @@ namespace RtxSetup
         {
             int stockCalls = 0;
             int choiceCalls = 0;
-            bool actual = SetupWindow.ResolveStockBeforeStaging(
+            bool actual = SetupWindow.ResolveBenchmarkStep(
                 () => Task.FromResult(stockResults[stockCalls++]),
                 () => choices[choiceCalls++]).GetAwaiter().GetResult();
             if (actual != expected || stockCalls != stockResults.Length || choiceCalls != choices.Length)

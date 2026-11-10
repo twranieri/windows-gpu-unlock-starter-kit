@@ -1,3 +1,21 @@
+Starter Kit 0.4.0 desktop preview, build 14, 2026-11-10
+
+- A process-level integration test reproduced stock baseline publication
+  failing after a completed workload. The inline Python loader now receives
+  pathlib.Path as required.
+- The integration uses the production Windows launcher, benchmark host,
+  measurement script, Python validator and comparator in separate processes.
+  GPU telemetry, workload output and EFI boot evidence are synthetic.
+- Stock and after failures on different GPUs preserve successful results.
+  Retry targets only missing results, a restarted process resolves the saved
+  interpreter, and completed comparisons do not rerun automatically.
+- Completion/resume fixtures keep an unfinished after test pending. Only
+  saved comparisons, an explicit finish-without-comparison choice, or the
+  comparison opt-out allow cleanup of the one-time reopen entry.
+- Physical laptop or desktop stock/unlock/after validation of this preview
+  remains pending. No GPU workload, USB change or reboot was performed on the
+  occupied local desktop for this build.
+
 Starter Kit 0.4.0 desktop preview, build 13, 2026-11-10
 
 - Windows PowerShell fixtures passed 5,452 inventory checks, including every

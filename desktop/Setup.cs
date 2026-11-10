@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.13")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.14")]
 
 namespace RtxSetup
 {
@@ -152,7 +152,9 @@ namespace RtxSetup
         {
             Text = "Run tensor tests before and after unlock", Dock = DockStyle.Fill, ForeColor = Muted
         };
-        private readonly HashSet<string> automaticRuns = new HashSet<string>(StringComparer.Ordinal);
+        private bool afterBenchmarksFinished;
+        private bool afterBenchmarksSkipped;
+        private string lastBenchmarkFailure;
         private string benchmarkPython;
         private const string RecoverySteps = "Fully power off, remove the USB, then start Windows Boot Manager directly. " +
             "After Windows returns, reconnect the USB and save its boot log before restoring the probe if you need the log.";
@@ -194,10 +196,10 @@ namespace RtxSetup
             frame.Controls.Add(rail, 0, 1);
             AddRail(rail, "SETUP PATH", Accent, 31);
             AddRail(rail, "01   Check this PC", Ink, 37);
-            AddRail(rail, "02   Prepare probe USB", Ink, 37);
+            AddRail(rail, "02   Save the before test", Ink, 37);
             AddRail(rail, "03   USB boot 1: read-only test", Ink, 43);
             AddRail(rail, "04   USB boot 2: unlock", Ink, 37);
-            AddRail(rail, "05   View the results", Ink, 37);
+            AddRail(rail, "05   After test and results", Ink, 37);
             AddRail(rail, "Setup reads the USB log and shows the next step.", Muted, 49);
             AddRail(rail, "RECOVERY", Accent, 32);
             AddRail(rail, "Power off, remove the USB, then choose Windows Boot Manager.", Muted, 80);
@@ -244,7 +246,11 @@ namespace RtxSetup
             details.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             automaticBenchmarks.Checked = ReadAutomaticBenchmarks();
             details.Controls.Add(automaticBenchmarks);
-            automaticBenchmarks.CheckedChanged += delegate { SaveAutomaticBenchmarks(); };
+            automaticBenchmarks.CheckedChanged += delegate
+            {
+                if (automaticBenchmarks.Checked) afterBenchmarksSkipped = false;
+                SaveAutomaticBenchmarks();
+            };
             activity.Dock = DockStyle.Fill;
             activity.Multiline = true;
             activity.ReadOnly = true;
@@ -263,6 +269,7 @@ namespace RtxSetup
                 else if (nextAction == "Help") await RefreshHelp(ShowBootHelp);
                 else if (nextAction == "BiosHelp") await RefreshHelp(ShowBiosHelp);
                 else if (nextAction == "Benchmarks") OpenBenchmarks();
+                else if (nextAction == "RetryAfter") await RunFlow(null, true);
                 else if (nextAction != null) await RunFlow(nextAction);
             };
             reopen.CheckedChanged += delegate
@@ -423,7 +430,7 @@ namespace RtxSetup
                 bool completed = false;
                 if (action != null)
                 {
-                    if (action == "StageUnlock" && !await ResolveStockBeforeStaging(
+                    if (action == "StageUnlock" && !await ResolveBenchmarkStep(
                         () => RunAutomaticBenchmark("Stock", usb, true), ShowStockBenchmarkOptions))
                     {
                         next.Text = "The unlock USB was not prepared. Click Prepare unlock USB to try again, or open Tensor benchmarks to check the stock test.";
@@ -482,17 +489,18 @@ namespace RtxSetup
                     failure = "Setup could not verify that Windows started BitLocker decryption.";
                     Append(failure);
                 }
+                if (!state.CompletedUnlockBoot)
+                {
+                    afterBenchmarksFinished = false;
+                    afterBenchmarksSkipped = false;
+                }
                 ShowStatus(selection);
-                UpdateResumeAfterFlow(action, completed);
                 var currentUsb = drives.SelectedItem as UsbDrive;
                 var checkFailure = lastResumeCleanupError ?? SetupDiagnostics.GetCheckFailure(state, nextAction == "FormatUsb");
                 if (failure != null || checkFailure != null)
                     await OpenDiagnostics(action ?? "Setup check", failure ?? checkFailure, currentUsb ?? usb, action != null);
                 else
                     lastReportedFailure = null;
-                if (completed && (windowsAction || action == "FormatUsb" ||
-                    ((action == "Prepare" || action == "RestoreProbe") && state.MediaState == "ProbeStaged") ||
-                    (action == "StageUnlock" && state.CanBootUnlock))) ArmResume();
                 var benchmarkUsb = currentUsb;
                 if (completed && action == "Prepare" && state.MediaState == "ProbeStaged")
                 {
@@ -502,9 +510,40 @@ namespace RtxSetup
                         Append(next.Text);
                     }
                 }
-                else if (checkAutomaticUnlocked && benchmarkUsb != null && state.MediaState == "UnlockLogged" &&
-                    HasVerifiedBootPrerequisites(state))
-                    await RunAutomaticBenchmark("Unlocked", benchmarkUsb);
+                else if (checkAutomaticUnlocked && automaticBenchmarks.Checked && benchmarkUsb != null && state.CompletedUnlockBoot &&
+                    HasVerifiedBootPrerequisites(state) && !afterBenchmarksSkipped)
+                {
+                    bool resolved = await ResolveBenchmarkStep(
+                        () => RunAutomaticBenchmark("Unlocked", benchmarkUsb, true),
+                        delegate
+                        {
+                            var choice = ShowAfterBenchmarkOptions();
+                            afterBenchmarksSkipped = choice == DialogResult.Ignore;
+                            return choice;
+                        });
+                    afterBenchmarksFinished = resolved && !afterBenchmarksSkipped;
+                }
+                UpdateResumeAfterFlow(action, completed);
+                if (state.CompletedUnlockBoot && !CanFinishCurrentBoot())
+                {
+                    phase.Text = "After benchmark needs attention";
+                    next.Text = "The USB boot matched Windows, but the comparison is not complete. Click Retry after benchmark. " +
+                        (reopen.Checked ? "Setup will reopen at the next sign-in until you finish or explicitly skip the comparison."
+                                        : "Automatic reopening is off. Keep Setup open, or reopen it to retry the comparison.");
+                    nextAction = "RetryAfter";
+                    primary.Text = "Retry after benchmark";
+                    ArmResume();
+                }
+                else if (state.CompletedUnlockBoot)
+                {
+                    phase.Text = afterBenchmarksFinished ? "Before-and-after comparison complete" : "USB boot matched Windows";
+                    next.Text = afterBenchmarksFinished
+                        ? "The comparison is saved for every detected GPU. Click View benchmark results."
+                        : "Setup finished without a complete comparison. Click View benchmark results to see what is available.";
+                }
+                if (completed && (windowsAction || action == "FormatUsb" ||
+                    ((action == "Prepare" || action == "RestoreProbe") && state.MediaState == "ProbeStaged") ||
+                    (action == "StageUnlock" && state.CanBootUnlock))) ArmResume();
             }
             catch (Exception error)
             {
@@ -853,6 +892,8 @@ namespace RtxSetup
             }
             else if (selected == null) primary.Text = "Select a USB drive";
             else primary.Text = "Setup action unavailable";
+            if (!automaticBenchmarks.Checked && nextAction != "ExtractHelp")
+                next.Text = "Before-and-after tests are OFF. Enable Run tensor tests before and after unlock to record them.\r\n" + next.Text;
             foreach (string blocker in blockers) Append(blocker);
         }
 
@@ -927,15 +968,21 @@ namespace RtxSetup
                 unlockStaged ? "USB boot 2: unlock" : "USB boot 1: read-only test", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
+        private bool CanFinishCurrentBoot()
+        {
+            return state != null && state.CompletedUnlockBoot &&
+                (!automaticBenchmarks.Checked || afterBenchmarksFinished || afterBenchmarksSkipped);
+        }
+
         private void UpdateResumeAfterFlow(string action, bool completed)
         {
-            if (state != null && state.CompletedUnlockBoot)
+            if (CanFinishCurrentBoot())
             {
                 resumeDisarmed = true;
                 reopen.Checked = false;
             }
-            else if (resumeDisarmed && completed &&
-                (action == "Prepare" || action == "StageUnlock" || action == "RestoreProbe" || action == "FormatUsb"))
+            else if (resumeDisarmed && ((state != null && state.CompletedUnlockBoot && !CanFinishCurrentBoot()) ||
+                (completed && (action == "Prepare" || action == "StageUnlock" || action == "RestoreProbe" || action == "FormatUsb"))))
             {
                 reopen.Checked = reopenPreference;
                 resumeDisarmed = false;
@@ -963,7 +1010,7 @@ namespace RtxSetup
 
         private void ArmResume()
         {
-            if (!reopen.Checked || resumeDisarmed || (state != null && state.CompletedUnlockBoot)) return;
+            if (!reopen.Checked || resumeDisarmed || CanFinishCurrentBoot()) return;
             try
             {
                 var usb = drives.SelectedItem as UsbDrive;
@@ -1069,7 +1116,10 @@ namespace RtxSetup
         {
             var script = Path.Combine(root, "desktop", "Measure.ps1");
             if (!File.Exists(script)) throw new FileNotFoundException("The benchmark runner is missing. Extract the entire Setup ZIP.");
-            var args = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script) + " -Action " + action;
+            bool refreshStock = action == "StockFresh";
+            var scriptAction = refreshStock ? "Stock" : action;
+            var args = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script) + " -Action " + scriptAction;
+            if (refreshStock) args += " -RefreshStock";
             if (!string.IsNullOrEmpty(python)) args += " -Python " + Quote(python);
             if (!string.IsNullOrEmpty(gpu)) args += " -Gpu " + Quote(gpu);
             if (usb != null && !string.IsNullOrEmpty(usb.VolumeId))
@@ -1140,7 +1190,20 @@ namespace RtxSetup
             if (busy) return;
             busy = true;
             UpdateButtons();
-            try { ShowBenchmarks(drives.SelectedItem as UsbDrive, null, null); }
+            try
+            {
+                var measured = ShowBenchmarks(drives.SelectedItem as UsbDrive, null, null);
+                if (state != null && state.CompletedUnlockBoot && measured != null && measured.HasComparisonForBoot)
+                {
+                    afterBenchmarksFinished = true;
+                    afterBenchmarksSkipped = false;
+                    UpdateResumeAfterFlow(null, false);
+                    phase.Text = "Before-and-after comparison complete";
+                    next.Text = "The comparison is saved for every detected GPU. Click View benchmark results.";
+                    nextAction = "Benchmarks";
+                    primary.Text = "View benchmark results";
+                }
+            }
             finally { busy = false; UpdateButtons(); }
         }
 
@@ -1152,6 +1215,7 @@ namespace RtxSetup
             {
                 dialog.ShowDialog(this);
                 benchmarkPython = dialog.PythonSelection;
+                lastBenchmarkFailure = dialog.Failure;
                 return dialog.Measurement;
             }
         }
@@ -1172,16 +1236,18 @@ namespace RtxSetup
             {
                 var status = ParseMeasureStatus(await RunMeasure("Status", benchmarkPython, null, usb));
                 if (action == "Stock" && HasStockForAll(status)) return true;
+                if (action == "Unlocked" && status.HasComparisonForBoot) return true;
                 bool needsRuntime = action == "Stock" && status.CanProvision && string.IsNullOrWhiteSpace(status.Python);
                 if ((!needsRuntime && !CanMeasure(status, action, true)) || string.IsNullOrWhiteSpace(status.BootId))
                 {
                     if (action == "Stock") Append(status.ProvisionMessage ?? status.Message);
                     else if (!status.HasComparisonForBoot) Append("No unlocked tensor test is ready. Open Tensor benchmarks to see which GPUs still need a matching stock test.");
-                    return action != "Stock";
+                    lastBenchmarkFailure = status.Cards == null ? status.Message :
+                        string.Join(Environment.NewLine, Array.ConvertAll(status.Cards, card => card.Message));
+                    return false;
                 }
-                if (!automaticRuns.Add(action + ":" + status.BootId) && !explicitRetry) return false;
                 var measured = ShowBenchmarks(usb, status, action);
-                if (action != "Stock") return true;
+                if (action == "Unlocked") return measured != null && measured.HasComparisonForBoot;
                 if (!HasStockForAll(measured)) return false;
                 Append("Stock tensor baselines are saved for the detected GPUs.");
                 return true;
@@ -1189,13 +1255,13 @@ namespace RtxSetup
             catch (Exception error)
             {
                 Append("Automatic tensor test could not start. Open Tensor benchmarks for details. " + error.Message);
-                failure = error.Message;
+                failure = lastBenchmarkFailure = error.Message;
             }
             await OpenDiagnostics("Automatic " + action + " tensor test", failure, usb, explicitRetry, openReport: false);
             return false;
         }
 
-        internal static async Task<bool> ResolveStockBeforeStaging(Func<Task<bool>> tryStock, Func<DialogResult> choose)
+        internal static async Task<bool> ResolveBenchmarkStep(Func<Task<bool>> tryStock, Func<DialogResult> choose)
         {
             while (!await tryStock())
             {
@@ -1208,10 +1274,20 @@ namespace RtxSetup
 
         private DialogResult ShowStockBenchmarkOptions()
         {
+            return ShowBenchmarkOptions(false);
+        }
+
+        private DialogResult ShowAfterBenchmarkOptions()
+        {
+            return ShowBenchmarkOptions(true);
+        }
+
+        private DialogResult ShowBenchmarkOptions(bool after)
+        {
             using (var dialog = new Form
             {
-                Text = "Stock benchmark did not finish", StartPosition = FormStartPosition.CenterParent,
-                AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(620, 190),
+                Text = after ? "After benchmark did not finish" : "Stock benchmark did not finish", StartPosition = FormStartPosition.CenterParent,
+                AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(660, 250),
                 FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false,
                 ShowInTaskbar = false, Font = Font, BackColor = Canvas, ForeColor = Ink
             })
@@ -1220,13 +1296,16 @@ namespace RtxSetup
                 content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 dialog.Controls.Add(content);
                 AddText(content, new Label { Font = new Font("Segoe UI Semibold", 14) },
-                    "The read-only test passed", Accent, 37);
+                    after ? "The comparison is not finished" : "The read-only test passed", Accent, 37);
                 AddText(content, new Label(),
-                    "Retry the stock test to get a before-and-after comparison. You can prepare the unlock USB now, but any GPU without a stock result will have no comparison for this attempt.",
+                    after
+                        ? "Retry the after test to finish the comparison. Finish without comparison only if you want to end this attempt without the remaining results."
+                        : "Retry the stock test to get a before-and-after comparison. You can prepare the unlock USB now, but any GPU without a stock result will have no comparison for this attempt.",
                     Ink, 68);
+                AddText(content, new Label(), lastBenchmarkFailure ?? "The test was closed before all results were saved.", Warning, 57);
                 var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-                var retry = MakeButton("Retry stock test", true);
-                var skip = MakeButton("Continue without comparison", false);
+                var retry = MakeButton(after ? "Retry after test" : "Retry stock test", true);
+                var skip = MakeButton(after ? "Finish without comparison" : "Continue without comparison", false);
                 var back = MakeButton("Back to Setup", false);
                 retry.DialogResult = DialogResult.Retry;
                 skip.DialogResult = DialogResult.Ignore;
@@ -1238,7 +1317,8 @@ namespace RtxSetup
                 dialog.CancelButton = back;
                 var result = dialog.ShowDialog(this);
                 if (result == DialogResult.Ignore)
-                    Append("Continuing without a stock comparison for any GPU that does not have a baseline. Automatic benchmarks stay enabled.");
+                    Append(after ? "Finished this attempt without the remaining comparison results." :
+                        "Continuing without a stock comparison for any GPU that does not have a baseline. Automatic benchmarks stay enabled.");
                 return result;
             }
         }
@@ -1264,6 +1344,7 @@ namespace RtxSetup
 
             public string PythonSelection { get; private set; }
             public MeasureStatus Measurement { get; private set; }
+            public string Failure { get; private set; }
 
             public BenchmarkWindow(Func<string, string, string, Task<BackendResult>> run,
                 Func<string, string, Action<string>, Task> reportFailure, Func<Task> prepareRuntime, string python,
@@ -1453,6 +1534,11 @@ namespace RtxSetup
                 try { if (failure != null) await reportFailure("Set up tensor benchmarks", failure, AppendActivity); }
                 finally { working = false; UpdateMeasureButtons(); }
                 if (failure == null) await RunTest("Stock", true);
+                else
+                {
+                    Failure = failure;
+                    if (automatic) Close();
+                }
             }
 
             private MeasureCard SelectedMeasureCard()
@@ -1460,9 +1546,9 @@ namespace RtxSetup
                 return results.SelectedItems.Count == 1 ? results.SelectedItems[0].Tag as MeasureCard : null;
             }
 
-            private async Task<MeasureStatus> Read(string action, string gpu)
+            private async Task<MeasureStatus> Read(string action, string gpu, bool refreshStock = false)
             {
-                var response = await run(action, PythonSelection, gpu);
+                var response = await run(refreshStock ? "StockFresh" : action, PythonSelection, gpu);
                 if (action != "Status") AppendActivity(response.Error);
                 return ParseMeasureStatus(response);
             }
@@ -1508,22 +1594,34 @@ namespace RtxSetup
                 statusLabel.Text = "Running the " + action.ToLowerInvariant() + " tensor test. Keep this window open until it finishes.";
                 try
                 {
+                    var failures = new List<string>();
                     foreach (var gpu in targets)
                     {
                         selectedGpu = gpu;
-                        var outcome = await Read(action, gpu);
-                        AppendActivity(outcome.Message);
-                        if (outcome.Status != "Complete") break;
+                        try
+                        {
+                            var outcome = await Read(action, gpu, action == "Stock" && !automatic);
+                            AppendActivity(outcome.Message);
+                            if (outcome.Status != "Complete" && outcome.Status != "AlreadyComplete")
+                                throw new InvalidOperationException(outcome.Message);
+                        }
+                        catch (Exception error)
+                        {
+                            failures.Add((gpu == null ? "" : "GPU " + gpu + ": ") + error.Message);
+                            if (!automatic || action != "Unlocked") break;
+                        }
                     }
+                    // Re-read even after a per-card failure so a retry targets only missing results.
                     Measurement = await Read("Status", null);
                     Display();
-                    returnToSetup = automatic && action == "Stock" && HasStockForAll(Measurement);
+                    if (failures.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
+                    returnToSetup = automatic && (action == "Stock" ? HasStockForAll(Measurement) : Measurement.HasComparisonForBoot);
                 }
                 catch (Exception error)
                 {
                     statusLabel.Text = error.Message;
                     AppendActivity(error.Message);
-                    failure = error.Message;
+                    failure = Failure = error.Message;
                 }
                 try
                 {
@@ -1532,7 +1630,7 @@ namespace RtxSetup
                             failure, AppendActivity);
                 }
                 finally { working = false; UpdateMeasureButtons(); }
-                if (returnToSetup) Close();
+                if (returnToSetup || (automatic && failure != null)) Close();
             }
 
             private void AppendActivity(string message)
