@@ -158,6 +158,18 @@ class TensorBenchmarkTests(unittest.TestCase):
             B.measure(torch, *B.MODES[0], args)
         self.assertEqual(torch.allocations, ["cuda:1", "cuda:1"])
 
+    def test_torch_native_cuda_uuid_object_binds_to_driver_uuid(self):
+        class NativeCudaUuid:
+            def __str__(self):
+                return gpu()["uuid"].removeprefix("GPU-")
+
+        torch = fake_torch()
+        torch._C = SimpleNamespace(_CUuuid=NativeCudaUuid)
+        torch.props.uuid = NativeCudaUuid()
+        props, ordinal = B.validate_torch(torch, gpu())
+        self.assertEqual(ordinal, 0)
+        self.assertEqual(B.torch_uuid(torch, props.uuid), gpu()["uuid"])
+
     def test_torch_missing_mismatched_duplicate_uuid_and_third_device_fail(self):
         for change in ("missing", "mismatch", "duplicate", "third"):
             props = copy.deepcopy(fake_torch().props)

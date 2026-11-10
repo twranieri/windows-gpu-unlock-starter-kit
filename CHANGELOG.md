@@ -1,5 +1,24 @@
 # Changes
 
+## 0.4.0-preview.6 — 2026-11-10
+
+- Compare EFI log time with Windows startup history to reject evidence from the preceding boot.
+- Run an unlocked benchmark for each eligible GPU, even if another card needs a fresh baseline.
+- Package the Windows desktop app, EFI tools and corresponding source for the public preview.
+
+## 0.4.0 — 2026-11-07 (desktop preview)
+
+- Build 5 clears Setup's Windows sign-in shortcut after a verified unlock boot.
+- Build 4 can run the stock and unlocked tensor tests from Setup, save the results and show the per-card comparison.
+- Build 3 validates each EFI completion against its PCI address and device ID. The loader stops for a full power-off after an unverified transaction failure.
+- Guide the reuse of an eligible older FAT32 stick after backup and recheck Windows prerequisites before giving unlock boot instructions.
+- Build 2 guides Windows prerequisites, offers confirmed USB formatting and Windows setting changes, and resumes after sign-in.
+- Show boot instructions for the selected USB and distinguish missing, incomplete and failed EFI results.
+- Add a Windows desktop setup with GPU inventory, USB selection, probe and unlock steps, and recovery.
+- Package prebuilt EFI tools with corresponding source and generate firmware locally from verified archives.
+- Cache firmware inputs across retries. Accept an independently pinned Arch Linux archive containing the same firmware bytes.
+- Separate EFI results from Windows verification. Restore an owned read-only probe after interrupted staging.
+
 ## 0.3.0 — 2026-11-04 (test build)
 
 - Add an experimental RTX 30 and RTX 40 route using pinned `nv-uefi-unlocker` source with separate read-only and transaction builds.

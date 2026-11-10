@@ -57,8 +57,8 @@ function ConvertTo-RtxInventory {
     }
 
     # nvidia-smi pads the 16-bit PCI segment to eight hex digits on current drivers.
-    # Preserve a real nonzero segment while requiring a legal PCI device/function.
-    $nvidiaPattern = [regex]'(?i)\A[ \t]*(?:0000)?(?<bdf>[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.[0-7]),[ \t]*0x(?<device>[0-9a-f]{4})10de,[ \t]*0x(?<subsystem>[0-9a-f]{8}),[ \t]*(?<memory>[1-9][0-9]{0,9})[ \t]*\z'
+    # Preserve a real nonzero segment. The EFI probe only targets function 0.
+    $nvidiaPattern = [regex]'(?i)\A[ \t]*(?:0000)?(?<bdf>[0-9a-f]{4}:[0-9a-f]{2}:[01][0-9a-f]\.0),[ \t]*0x(?<device>[0-9a-f]{4})10de,[ \t]*0x(?<subsystem>[0-9a-f]{8}),[ \t]*(?<memory>[1-9][0-9]{0,9})[ \t]*\z'
     $addresses = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $cards = foreach ($line in $NvidiaRows) {
         $row = $nvidiaPattern.Match($line)
@@ -69,7 +69,8 @@ function ConvertTo-RtxInventory {
         $bdf = $row.Groups['bdf'].Value.ToLowerInvariant()
         $device = $row.Groups['device'].Value.ToLowerInvariant()
         $subsystem = $row.Groups['subsystem'].Value.ToLowerInvariant()
-        if (!$addresses.Add($bdf) -or $subsystem -cin @('00000000', 'ffffffff')) {
+        if (!$addresses.Add($bdf) -or $subsystem.Substring(0, 4) -cin @('0000', 'ffff') -or
+            $subsystem.Substring(4, 4) -cin @('0000', 'ffff')) {
             throw 'NVIDIA reports a duplicate PCI address or an invalid subsystem.'
         }
         $model = $Catalog[$device]
@@ -100,4 +101,49 @@ function Get-RtxInventory {
     if ($LASTEXITCODE -ne 0) { throw 'NVIDIA could not read PCI identities and VRAM.' }
     $windowsRows = @(Get-CimInstance -ClassName Win32_VideoController -Property Name, PNPDeviceID -ErrorAction Stop)
     ConvertTo-RtxInventory -NvidiaRows $nvidiaRows -WindowsRows $windowsRows -Catalog $catalog
+}
+
+function Get-RtxCandidateUsb {
+    $null = Get-Command Get-RtxUsbRoot -CommandType Function -ErrorAction Stop
+    $mounted = Get-Volume -ErrorAction Stop |
+        Where-Object { [string]$_.DriveLetter -match '\A[D-Z]\z' } |
+        Group-Object -Property DriveLetter |
+        Sort-Object -Property Name
+
+    foreach ($entry in $mounted) {
+        if ($entry.Count -ne 1) { continue }
+        $volume = $entry.Group[0]
+        [uint64]$freeBytes = 0
+        if ($volume.FileSystem -ne 'FAT32' -or $volume.HealthStatus -ne 'Healthy' -or
+            ![uint64]::TryParse([string]$volume.SizeRemaining, [ref]$freeBytes)) { continue }
+
+        $letter = ([string]$volume.DriveLetter).ToUpperInvariant()
+        try {
+            $null = Get-RtxUsbRoot $letter
+        } catch {
+            # A device can be unreadable or removed while refreshing the list.
+            continue
+        }
+        [pscustomobject]@{
+            Letter = $letter
+            Label = [string]$volume.FileSystemLabel
+            FreeBytes = $freeBytes
+            VolumeId = [string]$volume.UniqueId
+        }
+    }
+}
+
+function Get-RtxWindowsDisplayProblems {
+    $devices=Get-CimInstance Win32_PnPEntity -Filter "PNPClass = 'Display'" `
+        -Property Name,PNPDeviceID,ConfigManagerErrorCode,Present -ErrorAction Stop
+    foreach($device in $devices) {
+        if($device.Present -eq $false -or $device.PNPDeviceID -notmatch '^PCI\\VEN_10DE' -or !$device.ConfigManagerErrorCode){continue}
+        $code=$device.ConfigManagerErrorCode
+        $reason=switch($code) {
+            12 {'Windows could not allocate enough PCI resources.'}
+            43 {'Windows stopped the device after a driver error.'}
+            default {'Check the GPU status in Device Manager.'}
+        }
+        "$($device.Name) reports Device Manager Code $code. $reason"
+    }
 }

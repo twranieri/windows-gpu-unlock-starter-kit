@@ -94,6 +94,14 @@ def canonical_uuid(value):
     return "GPU-" + match[1].lower()
 
 
+def torch_uuid(torch, value):
+    # Newer PyTorch versions expose a CUDA UUID object instead of a string.
+    uuid_type = getattr(getattr(torch, "_C", None), "_CUuuid", None)
+    if type(value) is uuid_type:
+        value = str(value)
+    return canonical_uuid(value)
+
+
 def gpu_snapshot(selected_bdf=None):
     completed = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(GPU_FIELDS),
                                 "--format=csv,noheader,nounits"], check=True,
@@ -187,7 +195,7 @@ def validate_torch(torch, gpu):
     if type(count) is not int or not 1 <= count <= 2:
         raise BenchmarkError("Expected one or two visible Torch CUDA devices")
     visible = [(index, torch.cuda.get_device_properties(index)) for index in range(count)]
-    identities = [canonical_uuid(getattr(props, "uuid", None)) for _, props in visible]
+    identities = [torch_uuid(torch, getattr(props, "uuid", None)) for _, props in visible]
     if len(set(identities)) != len(identities):
         raise BenchmarkError("Ambiguous duplicate Torch GPU UUIDs")
     selected_uuid = canonical_uuid(gpu.get("uuid"))
@@ -240,7 +248,7 @@ def torch_metadata(torch, props):
             "build_configuration": "Content omitted to avoid disclosing build paths; full text SHA-256 recorded.",
             "build_configuration_sha256": hashlib.sha256(build.encode()).hexdigest(),
             "cublas_dlls": [file_identity(path) for path in dlls],
-            "gpu_properties": {"name": props.name, "uuid": canonical_uuid(props.uuid),
+            "gpu_properties": {"name": props.name, "uuid": torch_uuid(torch, props.uuid),
                                "compute_capability": [props.major, props.minor],
                                "total_memory_bytes": props.total_memory,
                                "multiprocessor_count": props.multi_processor_count}}

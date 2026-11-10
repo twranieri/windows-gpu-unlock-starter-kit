@@ -1,14 +1,20 @@
 # Windows GPU Unlock Starter Kit
 
-**v0.3.0 experimental prerelease** adds a Windows USB unlock workflow for one or two GeForce RTX 30- or RTX 40-series GPUs, including mixed pairs. The kit builds the bootloader and firmware assets on your PC and includes before/after tensor benchmarks for each card.
+**v0.4.0 desktop preview, build 6** includes **Windows GPU Unlock Setup.exe** for one or two GeForce RTX 30- or RTX 40-series GPUs, including mixed pairs. Extract the whole ZIP, open Setup and approve the Windows administrator prompt. Use one dedicated, backed-up USB drive. Setup guides Windows prerequisites, USB preparation and boot verification. It can also run a stock tensor test and compare it with a test after the unlock boot. Once Setup verifies the boot, it clears its sign-in shortcut. [Download the desktop preview](https://github.com/twranieri/windows-gpu-unlock-starter-kit/releases/tag/v0.4.0-preview.6)
+
+The preview includes verified prebuilt EFI tools, the asset generator and the corresponding engine source. It generates firmware assets locally from verified inputs. Git and compilers are unnecessary for desktop setup. Physical validation of this workflow is pending.
+
+[Desktop setup and offline inputs](docs/RTX30-40.md#desktop-setup-preview-v040) · [Upstream comparison and hardware reports](docs/COMPARISON.md)
+
+**v0.3.0 experimental prerelease** remains available as a source-only kit. It builds the bootloader and firmware assets on your PC and includes before/after tensor benchmarks for each card.
 
 [Download the v0.3.0 kit](https://github.com/twranieri/windows-gpu-unlock-starter-kit/releases/download/v0.3.0/gpu-unlock-starter-kit-v0.3.0.zip) · [SHA-256](https://github.com/twranieri/windows-gpu-unlock-starter-kit/releases/download/v0.3.0/gpu-unlock-starter-kit-v0.3.0.zip.sha256) · [GitHub release](https://github.com/twranieri/windows-gpu-unlock-starter-kit/releases/tag/v0.3.0)
 
-[Setup](#set-up-v030) · [GPU compatibility](#gpu-compatibility) · [Benchmarks and results](#measure-each-physical-card) · [Recovery and driver updates](#recovery-and-driver-updates) · [Validation and source](#validation-and-source)
+[v0.3.0 source setup](#set-up-v030) · [GPU compatibility](#gpu-compatibility) · [Benchmarks and results](#measure-each-physical-card) · [Recovery and driver updates](#recovery-and-driver-updates) · [Validation and source](#validation-and-source)
 
 ## GPU compatibility
 
-The v0.3.0 `RTX.ps1` workflow accepts **48 RTX 30-branded PCI device IDs** and **25 RTX 40 IDs** from the pinned NVIDIA driver table. This includes the RTX 3080 **10 GB**, **10 GB LHR** and **12 GB**, plus desktop and laptop entries. The loader reads each card's live memory layout. The Ada-based RTX 3050 A Laptop uses the Ada firmware path. Both cards in a two-GPU setup must match the inventory and probe.
+The RTX 30/40 workflows accept **48 RTX 30-branded PCI device IDs** and **25 RTX 40 IDs** from the pinned NVIDIA driver table. This includes the RTX 3080 **10 GB**, **10 GB LHR** and **12 GB**, plus desktop and laptop entries. The loader reads each card's live memory layout. The Ada-based RTX 3050 A Laptop uses the Ada firmware path. Both cards in a two-GPU setup must match the inventory and probe.
 
 These are **candidates for physical testing**. Physical results depend on the exact card, VBIOS, power state, UEFI graphics initialization, motherboard and display ownership. [Upstream hardware reports](https://github.com/physicsdolphin/nv-uefi-unlocker/blob/37327d53dfae1f475638cdb8897b56d3edd4eb20/docs/compatibility.en.md) · [RTX 30 catalog](rtx30-pci.json) · [RTX 40 catalog](rtx40-pci.json)
 
@@ -108,6 +114,15 @@ The default local work folder is `.local/rtx`. If the installed GPU set changes,
 
 ## Measure each physical card
 
+In the desktop preview, leave automatic tensor testing enabled and open
+Setup after starting Windows Boot Manager for the stock boot. Setup can
+find a compatible CUDA PyTorch environment or let you select its
+`python.exe`. After the unlock boot, keep the USB connected so Setup can
+match the boot log. The comparison appears in the tensor benchmark window.
+Keep the driver and GPU settings the same, and close other GPU workloads.
+
+For the command-line workflow, run the scripts directly.
+
 Use the same CUDA-enabled PyTorch interpreter before and after, with driver, power limit, voltage curve and offsets unchanged. Close GPU applications. Find each physical address:
 
 ```powershell
@@ -144,7 +159,7 @@ A driver update changes the comparison conditions. Collect a new stock baseline 
 
 - The Windows entry point built a single-card package for the installed RTX 3090. A mixed RTX 3090 and RTX 4070 Super package built with simulated card identities and produced both EFI applications and 13 verified assets.
 - Host tests covered all 73 catalog IDs, VRAM inputs, exact one- and two-card matching, mixed-family assets, probe-log gating and interrupted staging. Physical unlock and recovery through `RTX.ps1` remain pending.
-- The downloadable ZIP is source-only. The engine, pinned dependencies and NVIDIA inputs are obtained during the local build. The kit includes the two PowerShell workflows, source patches, hardware catalogs and the per-card tensor tests.
+- The published v0.3.0 ZIP is source-only. It obtains the engine, pinned dependencies and NVIDIA inputs during the local build. The v0.4.0 desktop preview also includes verified prebuilt tools and complete corresponding engine source. Each route generates the NVIDIA assets locally.
 
 [Validation report](VALIDATION.txt) · [Change history](CHANGELOG.md) · [Pinned source manifest](pinned-source.json) · [Notices](NOTICES.txt) · [GPL-2.0-only license](LICENSE)
 

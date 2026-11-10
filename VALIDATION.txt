@@ -1,3 +1,100 @@
+Starter Kit 0.4.0 desktop preview, build 6, 2026-11-10
+
+- Verified Windows startup history against the current boot. Regression
+  checks reject an EFI log from the preceding boot even when the log is only
+  minutes old.
+- Compiled the desktop app and checked per-card targeting with two-card
+  fixtures, including a card without a stock baseline. The PowerShell and
+  Python regression suites passed.
+- The November 8 RTX 3090 hardware run used the earlier capture-based USB
+  loader. The desktop preview's physical probe, unlock and Windows resume
+  sequence still requires an attended test.
+
+Starter Kit 0.4.0 desktop preview, build 5, 2026-11-07
+
+- Windows fixtures checked that a current, complete unlock boot with healthy
+  Windows display devices clears the sign-in entry. An old log, incomplete
+  handoff or Windows GPU error leaves setup incomplete.
+- Desktop fixtures checked cleanup retry and intentional rearming for another
+  setup. A real Windows sign-in after an unlock boot remains to be tested.
+
+Starter Kit 0.4.0 desktop preview, build 4, 2026-11-07
+
+- The local RTX 3090 completed a scratch benchmark with the detected CUDA
+  PyTorch environment in all four precision modes. The test exercised the
+  benchmark workload without creating a stock baseline for the setup flow.
+- Windows PowerShell fixtures exercised two-card measurements, comparison
+  after a matching boot, failed-run retry, and rejection of stale logs and
+  changed driver settings. Compiled desktop fixtures checked automatic
+  scheduling, per-card results, and reuse of comparisons within one boot.
+- Verified an ordinary Windows process launch and captured its output. The
+  full elevated Setup launch and automatic sequence across a real unlock
+  reboot still require an attended test.
+
+Starter Kit 0.4.0 desktop preview, build 3, 2026-11-07
+
+- Cross-checked all 48 RTX 30-branded and 25 RTX 40 PCI IDs and their firmware
+  routing against the NVIDIA 620.70.06 table. Windows PowerShell 5.1 passed
+  115 synthetic inventory checks and all current and earlier runner suites.
+- Rebuilt the probe and transaction EFI applications offline from the
+  pinned source patch. The Rust host suite passed 162 tests. Checked that
+  the transaction and recovery-stop strings occur in the transaction EFI
+  only. The recovery stop closes the boot log before attempting an
+  emergency reset.
+- Media fixtures verify completion by exact PCI address and device ID.
+  Duplicate, missing and mismatched records cannot establish a result.
+  A missing unlock log leads to recovery instructions.
+- Desktop fixtures cover formatting an eligible older FAT32 stick, the
+  exact volume identity and the boot prerequisites shown before confirming
+  the unlock. Storage, decryption, resume and EFI checks used fixtures or
+  scratch builds. Hardware unlock and recovery still require physical tests.
+
+Starter Kit 0.4.0 desktop preview, build 2, 2026-11-07
+
+- Verified 11 simulated WinForms states for Windows prerequisites, decryption
+  progress, USB formatting, probe, unlock and recovery. Saved and re-read the
+  one-time shortcut in a scratch folder, including Unicode paths and USB
+  identity argument parsing.
+- Windows preparation tests mock the system and storage providers. No live
+  USB was erased, BitLocker changed, firmware setting changed, Startup entry
+  registered or PC rebooted during these tests. Physical unlock and full
+  sign-in resume remain to be tested.
+- Media tests distinguish absent, empty, refused, partial and mismatched log
+  evidence. A successful EFI log is presented separately from Windows
+  verification.
+
+Starter Kit 0.4.0 original desktop preview, 2026-11-07
+
+- Compiled the x64 Windows setup executable and exercised its controls and
+  status rendering with a simulated two-card inventory. Windows PowerShell
+  5.1 detected the installed RTX 3090 and refused the existing USB layout
+  from an older unlock workflow.
+- Compiled separate AMD64 EFI images and the native asset tool offline from
+  the exact patched engine and 47 vendored Cargo dependencies. The package
+  checks both EFI subsystems, the transaction marker, binary and source
+  hashes, and archive integrity. The package includes corresponding source.
+- 109 inventory checks cover the 73 PCI IDs, one or two GPUs, memory
+  variants, and eligible USB enumeration. The media and runner checks cover
+  all seven USB states, stale evidence, interrupted loader swap and probe
+  recovery, case-insensitive read-only dispatch, wrong-volume refusal and
+  present-device resource errors. Compared all catalog entries with NVIDIA
+  driver table e6a2e01579fbbd1ca2ed43fef2ee2589e9bd8bd9 and the engine's
+  exact family routing. All 73 matched.
+- The revised probe requires readable D0 on each target before logging a
+  match. Built both EFI feature variants, verified the source patch and
+  exercised the target contract and probe failure messages on the host.
+- The pinned Arch and CachyOS inputs each generated identical Ampere assets
+  using Windows PowerShell 5.1. The mixed-family comparison reproduced all
+  13 assets byte for byte with the original engine pins.
+- A clean-network run from an extracted preview ZIP used Windows PowerShell
+  5.1 with a system-only PATH. It downloaded both pinned archives, generated
+  seven Ampere assets, and verified the two loaders and package receipt for
+  the installed RTX 3090.
+- The setup and media checks exercised host logic and local work folders.
+  Physical probe, unlock, recovery and per-model verification are pending
+  for this desktop preview. The older RTX 3090 USB boot results concern
+  the separate capture-based workflow.
+
 Starter Kit 0.3.0 test build, 2026-11-04
 
 - Built the exact patched Rust engine from v2.1.11-diag2 with locked

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Synthetic Windows/NVIDIA inventory rows. No live hardware calls.
+# Synthetic Windows/NVIDIA and Storage inventory rows. No live hardware calls.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../rtx/Inventory.ps1')
 $catalog = Get-RtxInventoryCatalog
@@ -81,9 +81,84 @@ foreach ($device in @('1e04','24b0','25a7','2b85','ffff')) {
 }
 foreach ($badRow in @($gaRow.Replace('220410DE','22041002'), $gaRow.Replace('24576','[N/A]'),
     $gaRow.Replace('24576','2147483648'), $gaRow.Replace('24576','0'), $gaRow.Replace('24576','24576 MiB'),
-    $gaRow.Replace('00000000:','00010000:'), $gaRow.Replace(':00.0',':20.0'), $gaRow.Replace(':00.0',':00.8'))) {
+    $gaRow.Replace('00000000:','00010000:'), $gaRow.Replace(':00.0',':20.0'),
+    $gaRow.Replace(':00.0',':00.1'), $gaRow.Replace(':00.0',':00.7'), $gaRow.Replace(':00.0',':00.8'))) {
     Assert-Refused @($badRow) @($ga) 'malformed PCI identity or VRAM'
 }
-Assert-Refused @($gaRow.Replace('147D10DE','00000000')) @(New-DisplayRow '2204' '00000000' 'one') 'invalid subsystem'
+foreach ($badSubsystem in @('00000000', '000010DE', 'FFFF10DE', '147D0000', '147DFFFF')) {
+    Assert-Refused @($gaRow.Replace('147D10DE',$badSubsystem)) @(New-DisplayRow '2204' $badSubsystem 'one') 'invalid subsystem'
+}
 
-Write-Output "PASS $script:Checks RTX inventory checks with synthetic Windows and NVIDIA rows."
+& {
+    . (Join-Path $PSScriptRoot '../rtx/Media.ps1')
+
+    function New-UsbTestVolume($Letter, $Label, $FreeBytes, $FileSystem = 'FAT32', $Health = 'Healthy') {
+        [pscustomobject]@{
+            DriveLetter = $Letter
+            FileSystemLabel = $Label
+            SizeRemaining = $FreeBytes
+            FileSystem = $FileSystem
+            HealthStatus = $Health
+        }
+    }
+
+    $volumes = @(
+        New-UsbTestVolume 'z' $null 0
+        New-UsbTestVolume 'N' 'Wrong filesystem' 100 'NTFS'
+        New-UsbTestVolume 'F' 'System partition' 100
+        New-UsbTestVolume 'Q' 'Removed before disk query' 100
+        New-UsbTestVolume 'G' 'Boot disk' 100
+        New-UsbTestVolume 'E' 'Unlock USB' (32GB)
+        New-UsbTestVolume 'W' 'Unhealthy' 100 'FAT32' 'Warning'
+        New-UsbTestVolume 'L' 'Internal disk' 100
+        New-UsbTestVolume 'M' 'No capacity reading' $null
+        New-UsbTestVolume 'Y' 'Duplicate letter' 100
+        New-UsbTestVolume 'y' 'Duplicate letter' 100
+        New-UsbTestVolume $null 'Unmounted' 100
+    )
+    function Get-Volume {
+        [CmdletBinding()]
+        param([string]$DriveLetter)
+        if (!$DriveLetter) {
+            if ($failEnumeration) { throw 'Storage provider unavailable' }
+            return $volumes
+        }
+        $volumes | Where-Object DriveLetter -EQ $DriveLetter
+    }
+    function Get-Partition {
+        [CmdletBinding()]
+        param([string]$DriveLetter)
+        [pscustomobject]@{
+            DiskNumber = [int][char]$DriveLetter
+            IsSystem = $DriveLetter -eq 'F'
+            IsBoot = $false
+        }
+    }
+    function Get-Disk {
+        [CmdletBinding()]
+        param([int]$Number)
+        if ([char]$Number -eq 'Q') { throw 'USB removed' }
+        [pscustomobject]@{
+            BusType = if ([char]$Number -eq 'L') { 'SATA' } else { 'USB' }
+            IsBoot = [char]$Number -eq 'G'
+            IsSystem = $false
+            IsOffline = $false
+            IsReadOnly = $false
+        }
+    }
+
+    $failEnumeration = $false
+    $candidates = @(Get-RtxCandidateUsb)
+    Assert-Inventory ($candidates.Count -eq 2 -and $candidates[0].Letter -ceq 'E' -and
+        $candidates[1].Letter -ceq 'Z') 'USB candidates must be sorted, healthy, mounted FAT32 USB data volumes.'
+    Assert-Inventory ($candidates[0].Label -ceq 'Unlock USB' -and $candidates[0].FreeBytes -is [uint64] -and
+        $candidates[0].FreeBytes -eq 32GB -and $candidates[1].Label -ceq '' -and
+        $candidates[1].FreeBytes -eq 0) 'USB labels or free byte counts were lost.'
+
+    $failEnumeration = $true
+    $failure = $null
+    try { $null = Get-RtxCandidateUsb } catch { $failure = $_ }
+    Assert-Inventory ($failure.Exception.Message -eq 'Storage provider unavailable') 'A failed USB refresh looked like an empty list.'
+}
+
+Write-Output "PASS $script:Checks RTX inventory checks with synthetic Windows, NVIDIA and Storage rows."

@@ -1,5 +1,5 @@
 diff --git a/loader/Cargo.toml b/loader/Cargo.toml
-index 20280ee9eb7968f13046ebfe3d02e2ca0f708ccf..ae0ca12af9f108dd18dc6170fb942a67766aad99 100644
+index 20280ee..ae0ca12 100644
 --- a/loader/Cargo.toml
 +++ b/loader/Cargo.toml
 @@ -19,6 +19,8 @@ default = []
@@ -12,7 +12,7 @@ index 20280ee9eb7968f13046ebfe3d02e2ca0f708ccf..ae0ca12af9f108dd18dc6170fb942a67
  [build-dependencies]
  # none: build.rs uses std only
 diff --git a/loader/src/banner.rs b/loader/src/banner.rs
-index 7b6ab98fbe91f817349809c93129e87252585b5c..09913d443a8213760a46f54f13dce2378324b0ae 100644
+index 7b6ab98..09913d4 100644
 --- a/loader/src/banner.rs
 +++ b/loader/src/banner.rs
 @@ -5,7 +5,12 @@ use log::info;
@@ -40,7 +40,7 @@ index 7b6ab98fbe91f817349809c93129e87252585b5c..09913d443a8213760a46f54f13dce237
  }
 diff --git a/loader/src/kit_targets.rs b/loader/src/kit_targets.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..18edb021b25128d011cf2ff8949739310639748d
+index 0000000..18edb02
 --- /dev/null
 +++ b/loader/src/kit_targets.rs
 @@ -0,0 +1,77 @@
@@ -122,7 +122,7 @@ index 0000000000000000000000000000000000000000..18edb021b25128d011cf2ff894973931
 +        && discovered.iter().all(|target| expected.contains(target))
 +}
 diff --git a/loader/src/logging.rs b/loader/src/logging.rs
-index 116c9fd828dad5cb786242a6536467dc91b6377f..bce4d1c14287cf77e977e11fd1ec26ea15520b02 100644
+index 116c9fd..bce4d1c 100644
 --- a/loader/src/logging.rs
 +++ b/loader/src/logging.rs
 @@ -144,6 +144,7 @@ impl Log for DualLogger {
@@ -134,7 +134,7 @@ index 116c9fd828dad5cb786242a6536467dc91b6377f..bce4d1c14287cf77e977e11fd1ec26ea
              if let Some(f) = (*self.file.get()).as_mut() {
                  let ok = f.write(line.as_bytes()).is_ok() && (!flush || f.flush().is_ok());
 diff --git a/loader/src/main.rs b/loader/src/main.rs
-index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42ea5bd2a4 100644
+index 91a30f2..f53031e 100644
 --- a/loader/src/main.rs
 +++ b/loader/src/main.rs
 @@ -20,6 +20,8 @@ mod logging;
@@ -182,7 +182,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      let (gpus, prep_ran) = if let keywait::Confirm::Proceed = confirmed {
          match tx_prep::take_gpus() {
              Some(g) => (g, true),
-@@ -140,10 +146,8 @@ fn main() -> Status {
+@@ -140,18 +146,22 @@ fn main() -> Status {
      } else {
          (pci::enumerate(), false)
      };
@@ -195,17 +195,23 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
  
      // Phase: GOP-PROBE (read-only; which console driver owns which GPU).
      if !prep_ran {
-@@ -159,6 +163,9 @@ fn main() -> Status {
-         }
+         gop::enumerate_gop();
      }
  
+-    // Phase: SAMPLE (M1: read-only cold-state register sweep, first card).
+-    if !prep_ran {
 +    #[cfg(all(feature = "kit", not(feature = "tx")))]
-+    kit_manifest_matches(&gpus);
++    let sample_ready = kit_manifest_matches(&gpus);
++    #[cfg(not(all(feature = "kit", not(feature = "tx"))))]
++    let sample_ready = true;
 +
-     // Phase: TX (feature-gated transaction; only in explicit tx builds).
-     // NOTE: inside tx_phase each card's console drivers are detached
-     // (TOTORONG craft) - the screen goes dark from that card's transaction
-@@ -199,7 +206,10 @@ fn main() -> Status {
++    // Avoid optional BAR0 sampling on a kit probe that could not confirm D0.
++    // Other builds keep the M1 read-only cold-state sweep of the first card.
++    if !prep_ran && sample_ready {
+         if let Some(gpu) = gpus.first() {
+             sample::run(gpu);
+         } else {
+@@ -199,7 +209,10 @@ fn main() -> Status {
          Err(e) => info!("CHAIN: failed: {:?}", e.status()),
      }
  
@@ -216,7 +222,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      logging::finish();
      Status::SUCCESS
  }
-@@ -239,7 +249,7 @@ fn main() -> Status {
+@@ -239,7 +252,7 @@ fn main() -> Status {
  /// tiers live in the README matrix, and a first-silicon report
  /// upgrades the row (issue #8 process). Shared by tx_one_card and the
  /// armed-prep asset step.
@@ -225,7 +231,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
  fn asset_family(dev: u16) -> Option<&'static str> {
      match dev {
          0x2600..=0x28ff => Some("ad102"),
-@@ -249,14 +259,90 @@ fn asset_family(dev: u16) -> Option<&'static str> {
+@@ -249,14 +262,121 @@ fn asset_family(dev: u16) -> Option<&'static str> {
      }
  }
  
@@ -249,26 +255,57 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
 +        return false;
 +    }
 +    #[cfg(not(feature = "tx"))]
-+    info!("KIT-PROBE: {nonce} matched {}", expected.len());
++    {
++        if !kit_pci_preflight(gpus) {
++            return false;
++        }
++        info!("KIT-PROBE: {nonce} matched {}", expected.len());
++    }
 +    #[cfg(feature = "tx")]
 +    info!("KIT: {nonce} matched {} target(s)", expected.len());
 +    true
 +}
 +
-+#[cfg(all(feature = "kit", feature = "tx"))]
++#[cfg(feature = "kit")]
 +fn kit_pci_preflight(gpus: &[pci::FoundGpu]) -> bool {
 +    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
 +    gpus.iter().all(|gpu| {
-+        let pci = unsafe {
++        let (seg, bus, dev, fun) = gpu.kit_identity.bdf;
++        let result = unsafe {
 +            boot::open_protocol::<pci::PciIo>(
 +                OpenProtocolParams { handle: gpu.handle, agent: boot::image_handle(), controller: None },
 +                OpenProtocolAttributes::GetProtocol,
 +            )
 +        };
-+        pci.is_ok_and(|pci| {
-+            pci.kit_identity() == Some(gpu.kit_identity)
-+                && tx_detach::pm_preflight(&pci).is_ok()
-+        })
++        let Ok(pci) = result else {
++            info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} PCI I/O unavailable. Check the firmware GPU configuration and cold boot again.");
++            return false;
++        };
++        if pci.kit_identity() != Some(gpu.kit_identity) {
++            info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} PCI identity unreadable or changed. Check the GPU set and rebuild if it changed.");
++            return false;
++        }
++        #[cfg(feature = "tx")]
++        return tx_detach::pm_preflight(&pci).is_ok();
++
++        #[cfg(not(feature = "tx"))]
++        {
++            let Some(cap) = pci.pm_cap() else {
++                info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} PCI power-management capability unavailable. Check that firmware initializes this GPU.");
++                return false;
++            };
++            let Some(pmcsr) = pci.kit_pmcsr(cap).filter(|value| *value != u16::MAX) else {
++                info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} PCI power state unreadable. Fully power off and retry the probe.");
++                return false;
++            };
++            let state = pmcsr & 3;
++            if state != 0 {
++                info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} is in D{state}. Fully power off and check that firmware initializes this GPU before retrying.");
++                return false;
++            }
++            info!("KIT: {seg:04x}:{bus:02x}:{dev:02x}.{fun} D0 verified");
++            true
++        }
 +    })
 +}
 +
@@ -316,7 +353,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      let mut attempted = 0usize;
      for (i, g) in targets.iter().enumerate() {
          info!(
-@@ -269,7 +355,14 @@ fn tx_phase(gpus: &[pci::FoundGpu]) {
+@@ -269,7 +389,14 @@ fn tx_phase(gpus: &[pci::FoundGpu]) {
              g.dev,
              g.fun
          );
@@ -332,7 +369,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
              attempted += 1;
          }
      }
-@@ -292,38 +385,8 @@ nothing was written, nothing was detached"
+@@ -292,38 +419,8 @@ nothing was written, nothing was detached"
      // hygiene, and CHAIN-MEMMAP logs the map after the free.
  }
  
@@ -372,7 +409,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      // Stick-completeness precheck (field case: a localhost-built stick made
      // on a 40-series-only machine carries no ga10x assets, so a 30-series
      // card in a multi-GPU target machine is silently skipped with no
-@@ -338,10 +401,10 @@ would be skipped. Rebuild with: .\\make-usbroot.ps1 -Family all, then copy the C
+@@ -338,10 +435,10 @@ would be skipped. Rebuild with: .\\make-usbroot.ps1 -Family all, then copy the C
  folder one level down is invisible to the loader (issues #139/#142)"
          );
          info!(
@@ -385,7 +422,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      }
  
      // Assets: `Ok(None)` = the stick does not carry it (skip this card);
-@@ -357,13 +420,17 @@ so no transaction was attempted and nothing was written"
+@@ -357,13 +454,17 @@ so no transaction was attempted and nothing was written"
                          "TX: ", $what, " is present but unreadable (damaged stick or pulled media)",
                          " - aborting before any GPU interaction"
                      ));
@@ -404,7 +441,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      let gsp_boot = must_asset!("gsp_boot", tx::read_asset_fmt("\\gsp_boot_{}.bin", family));
      let gsp_image = must_asset!("fwimage", tx::read_asset_fmt("\\fwimage_{}.bin", family));
      let stock_sig = must_asset!("fwsignature", tx::read_asset_fmt("\\fwsignature_{}.bin", family));
-@@ -376,12 +443,21 @@ so no transaction was attempted and nothing was written"
+@@ -376,12 +477,21 @@ so no transaction was attempted and nothing was written"
      // 6514938280). This marker swaps ONLY the payload. Same strict
      // semantics as every other asset: present-but-unreadable aborts, it
      // never degrades to the family-pinned payload.
@@ -427,7 +464,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
          }
      };
      let bl = if family == "tu10x" {
-@@ -392,7 +468,7 @@ so no transaction was attempted and nothing was written"
+@@ -392,7 +502,7 @@ so no transaction was attempted and nothing was written"
      let (Some(booter), Some(gsp_boot), Some(gsp_image), Some(stock_sig)) =
          (booter, gsp_boot, gsp_image, stock_sig) else {
          info!("TX: assets missing for family '{family}' (booter_load_*/gsp_boot_*/fwimage_*/fwsignature_*) - skipping");
@@ -436,7 +473,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      };
      if v67.is_none() {
          info!("TX: NO V67 file - chain-replay mode (no unlock writes)");
-@@ -401,7 +477,7 @@ so no transaction was attempted and nothing was written"
+@@ -401,7 +511,7 @@ so no transaction was attempted and nothing was written"
      }
      if family == "tu10x" && bl.is_none() {
          info!("TX: tu10x missing \\sec2_bl_tu10x.bin (WITH_LOADER FWSEC needs the generic falcon BL) - skipping");
@@ -445,7 +482,7 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
      }
      // Turing track enabled 2026-10-27 (user M3 go): the chain is the
      // cmp50hx-proven TU106 recipe - FWSEC BOOT_WITH_LOADER via the generic
-@@ -413,9 +489,50 @@ so no transaction was attempted and nothing was written"
+@@ -413,9 +523,50 @@ so no transaction was attempted and nothing was written"
      // stick must be refused here - the DMA copies use fixed windows.
      if let Err(e) = tx::validate_asset_sizes(&assets) {
          info!("TX: asset validation failed ({e:?}) - nothing was touched, chain-loading Windows");
@@ -454,8 +491,8 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
 +    Some(assets)
 +}
 +
-+/// Returns whether this card reached the transaction. Recovery is per-card
-+/// and the next card still runs, including after emergency FLR.
++/// Returns whether this card reached the transaction. The kit stops on a
++/// generic transaction failure because emergency FLR cannot prove recovery.
 +#[cfg(feature = "tx")]
 +fn tx_one_card(g: &pci::FoundGpu, prepared: Option<&tx::TxAssets>) -> bool {
 +    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams};
@@ -497,8 +534,36 @@ index 91a30f2fca9fee6427ba3a89bf43ab8928af52af..c2fbaa476325dc647862cc35a35cae42
          Ok(()) => {
              info!("SELECTOR RESULT: transaction complete");
              tx::handoff_out(&pci);
+@@ -457,10 +608,25 @@ so no transaction was attempted and nothing was written"
+             tx::handoff_out(&pci);
+         }
+         Err(e) => {
++            #[cfg(feature = "kit")]
++            {
++                info!(
++                    "FINAL: KIT-STOP: transaction failed: {e:?}. Attempting emergency reset. \
++This boot will stop. Fully power off, remove the USB, then boot Windows Boot Manager directly."
++                );
++                // Close the file before reset in case the reset itself hangs.
++                logging::finish();
++            }
++            #[cfg(not(feature = "kit"))]
+             info!("TX: transaction failed: {e:?} - NOT retrying this session");
+-            // Failure unwind: FLR wipes our half-states (engine resets, BCR,
+-            // DMA queues) so the Windows driver gets a cold-boot card.
++            // Best effort only: this reset does not prove containment.
+             tx::emergency_flr(g.handle);
++            #[cfg(feature = "kit")]
++            loop {
++                // Returning even an error lets firmware try the next boot option.
++                uefi::boot::stall(core::time::Duration::from_secs(1));
++            }
++            #[cfg(not(feature = "kit"))]
+             tx::handoff_out(&pci);
+         }
+     }
 diff --git a/loader/src/pci.rs b/loader/src/pci.rs
-index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9bd85ab749 100644
+index 7a34830..e4eb189 100644
 --- a/loader/src/pci.rs
 +++ b/loader/src/pci.rs
 @@ -200,6 +200,49 @@ impl PciIo {
@@ -521,7 +586,7 @@ index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9b
 +        self.config_read_u32_checked(0x2c)
 +    }
 +
-+    #[cfg(all(feature = "kit", feature = "tx"))]
++    #[cfg(feature = "kit")]
 +    pub fn kit_identity(&self) -> Option<crate::kit_targets::Target> {
 +        let id = self.config_read_u32_checked(0x00)?;
 +        let class = self.config_read_u32_checked(0x08)?;
@@ -536,7 +601,7 @@ index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9b
 +        })
 +    }
 +
-+    #[cfg(all(feature = "kit", feature = "tx"))]
++    #[cfg(feature = "kit")]
 +    pub fn kit_pmcsr(&self, cap: u8) -> Option<u16> {
 +        let mut value = 0u16;
 +        let status = self.config_read_raw(
@@ -551,6 +616,15 @@ index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9b
      pub fn config_read_u8(&self, offset: u32) -> u8 {
          let mut v = 0u8;
          let st = self.config_read_raw(PciWidth::Uint8, offset, 1, &mut v as *mut _ as *mut c_void);
+@@ -373,7 +416,7 @@ impl PciIo {
+     /// Walk the legacy capability list for the Power Management capability
+     /// (ID 0x01). Read-only. `None` = no PM cap, which means the D-state
+     /// cannot be evaluated at all (the device is then assumed powered on).
+-    #[cfg(feature = "tx")]
++    #[cfg(any(feature = "tx", feature = "kit"))]
+     pub fn pm_cap(&self) -> Option<u8> {
+         if self.config_read_u16(0x06) & 0x10 == 0 {
+             return None; // STATUS.CAP_LIST absent
 @@ -673,6 +716,8 @@ pub struct FoundGpu {
      pub bus: usize,
      pub dev: usize,
@@ -652,7 +726,7 @@ index 7a348303884c10605f707738b33cf7922b53ddb5..ef2de86f70bd00e4fc809032fea19a9b
      let clean: alloc::vec::Vec<u8> = raw
          .iter()
 diff --git a/loader/src/tx.rs b/loader/src/tx.rs
-index 40c23c065700ddfa581726dd8fa6afb39f0ae142..967244c9f275c1e1dcc5a9f89380f2cad6150a13 100644
+index 40c23c0..21cea11 100644
 --- a/loader/src/tx.rs
 +++ b/loader/src/tx.rs
 @@ -827,7 +827,9 @@ pub fn read_boot_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
@@ -684,8 +758,17 @@ index 40c23c065700ddfa581726dd8fa6afb39f0ae142..967244c9f275c1e1dcc5a9f89380f2ca
          info!("TX: \\tx-no-pm-preflight.txt present - PM preflight skipped (guarded-overlay parity, one PMCSR write)");
      } else {
          crate::tx_detach::pm_preflight(gpu.pci).map_err(|e| {
+@@ -1612,7 +1614,7 @@ pub fn flr_once(pci: &crate::pci::PciIo) {
+     let wpr_hi = pci.bar_read_u32(0, 0x001f_a828);
+     info!(
+         "FLR: cmd={cmd:#06x} devsta={sta:#06x} (pending={}) gfw_boot={gfw:#x} wpr2_hi={wpr_hi:#x}",
+-        sta & 0x200 != 0,
++        sta & 0x20 != 0,
+     );
+     pm_flr_post(pci, pm);
+ }
 diff --git a/loader/src/tx_detach.rs b/loader/src/tx_detach.rs
-index ef1eb88bf5664958ebb6167434371ffcc50d0d3f..d76303272ce7e43728efdd5086cbc9f4d7d3c970 100644
+index ef1eb88..d763032 100644
 --- a/loader/src/tx_detach.rs
 +++ b/loader/src/tx_detach.rs
 @@ -198,11 +198,24 @@ pub struct PmEntry {
@@ -715,7 +798,7 @@ index ef1eb88bf5664958ebb6167434371ffcc50d0d3f..d76303272ce7e43728efdd5086cbc9f4
          if crate::tx::probe_file("\\tx-require-d0.txt") {
 diff --git a/sim/tests/kit_targets.rs b/sim/tests/kit_targets.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab3aad46f4b344793dc562159de389dd8223f97a
+index 0000000..ab3aad4
 --- /dev/null
 +++ b/sim/tests/kit_targets.rs
 @@ -0,0 +1,70 @@

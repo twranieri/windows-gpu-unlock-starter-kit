@@ -1,4 +1,4 @@
-Windows GPU Unlock Starter Kit 0.3.0
+Windows GPU Unlock Starter Kit 0.4.0 desktop preview
 Added 2026-10-30: guided Windows preparation, pinned source acquisition,
 native Windows firmware preparation, and before/after tensor-core benchmarking.
 
@@ -37,11 +37,13 @@ builds, and manual boot confirmation. The engine builds locally from the
 pinned source. NVIDIA-derived assets are generated locally and their license
 and notice are retained in the local build directory.
 
-The starter ZIP contains no upstream EFI executable, GPU firmware, VBIOS/PROM,
-Windows driver, CUDA DLL, raw diagnostic capture or machine-specific profile.
-Recipients obtain the pinned upstream sources locally. Those sources retain
-their own licenses, attribution, notices and change history. Firmware generation
-must retain its generated NVIDIA-LICENSE and upstream firmware NOTICE.
+The desktop preview ZIP contains the compiled setup program, its C# source and
+build script, and two EFI applications and an asset tool compiled from the
+patched engine. The corresponding engine source and vendored dependencies are
+in source/engine-source.zip with their licenses. See desktop/BUILD.md for build
+commands. The ZIP excludes NVIDIA firmware, VBIOS/PROM, Windows drivers, CUDA
+DLLs, raw diagnostic captures and machine-specific profiles. Firmware generation
+retains its generated NVIDIA-LICENSE and upstream firmware NOTICE locally.
 
 No upstream endorsement is claimed. A preparation check is not hardware
 compatibility approval. Exact reviewed capture, profile, asset and actual-input host-test gates decide
