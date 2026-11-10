@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference='Stop'
-if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.11') {
+if($MyInvocation.InvocationName -ne '.' -and $Desktop -and $DesktopBuild -cne '0.4.0.12') {
     throw 'Setup executable and scripts are from different builds. Extract the whole matching ZIP into a new local folder and open Setup there.'
 }
 if(!$WorkDirectory){$WorkDirectory=Join-Path $PSScriptRoot '.local/rtx'}

@@ -12,7 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("Windows GPU Unlock Setup")]
-[assembly: System.Reflection.AssemblyVersion("0.4.0.11")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.12")]
 
 namespace RtxSetup
 {
@@ -87,6 +87,7 @@ namespace RtxSetup
         public string Python { get; set; }
         public string ResultsDirectory { get; set; }
         public string BootId { get; set; }
+        public bool BootConfirmed { get; set; }
         public bool HasComparisonForBoot { get; set; }
         public bool CanProvision { get; set; }
         public string ProvisionMessage { get; set; }
@@ -149,7 +150,7 @@ namespace RtxSetup
         private readonly System.Windows.Forms.Timer decryptRefresh = new System.Windows.Forms.Timer { Interval = 15000 };
         private readonly CheckBox automaticBenchmarks = new CheckBox
         {
-            Text = "Run tensor benchmarks automatically", Dock = DockStyle.Fill, ForeColor = Muted
+            Text = "Run tensor tests before and after unlock", Dock = DockStyle.Fill, ForeColor = Muted
         };
         private readonly HashSet<string> automaticRuns = new HashSet<string>(StringComparer.Ordinal);
         private string benchmarkPython;
@@ -1141,6 +1142,7 @@ namespace RtxSetup
                 if ((!needsRuntime && !CanMeasure(status, action, true)) || string.IsNullOrWhiteSpace(status.BootId))
                 {
                     if (action == "Stock") Append(status.ProvisionMessage ?? status.Message);
+                    else if (!status.HasComparisonForBoot) Append("No unlocked tensor test is ready. Open Tensor benchmarks to see which GPUs still need a matching stock test.");
                     return action != "Stock";
                 }
                 if (!automaticRuns.Add(action + ":" + status.BootId) && !explicitRetry) return false;
@@ -1203,19 +1205,21 @@ namespace RtxSetup
                 content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 Controls.Add(content);
                 AddText(content, new Label { Font = new Font("Segoe UI Semibold", 15) }, "Tensor throughput", Accent, 34);
-                AddText(content, new Label(), "For a stock baseline, start Windows Boot Manager directly. After an unlock boot, keep that USB connected and selected in Setup. Keep the driver, power limit and clock settings the same. Select a GPU row to run its unlocked test separately.", Ink, 61);
+                AddText(content, new Label(), "Before unlock: save a stock test from Windows Boot Manager. After a verified unlock boot: keep the USB connected and selected in Setup to run the unlocked test. Use the same Python, driver, power and clock settings.", Ink, 61);
                 AddText(content, statusLabel, "Checking benchmark prerequisites...", Warning, 56);
                 AddText(content, pythonLabel, "Looking for CUDA-enabled Python...", Muted, 28);
 
                 var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true };
-                var help = MakeButton("Python help", false);
+                var help = MakeButton("Benchmark help", false);
                 controls.Controls.AddRange(new Control[] { setupRuntime, stock, unlocked, browse, refresh, folder, help });
                 content.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
                 content.Controls.Add(controls);
                 help.Click += delegate
                 {
-                    var choice = MessageBox.Show(this, "Choose python.exe from a Windows environment with CUDA-enabled PyTorch. If you use Forge or ComfyUI, try its Python environment. Use the same interpreter for both runs.\r\n\r\nOpen the PyTorch setup guide?",
-                        "Benchmark Python help", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    var choice = MessageBox.Show(this, "1. Before unlocking, boot normally through Windows Boot Manager. Use Set up benchmarks if CUDA Python is missing, or click Run stock test.\r\n\r\n" +
+                    "2. After the verified unlock boot, reopen Setup with the same USB selected. If the unlocked test does not start automatically, click Run unlocked test. Open the results folder to view the comparison.\r\n\r\n" +
+                    "If the benchmark check cannot start, extract the entire ZIP to a fresh local folder. Open Setup from File Explorer using your signed-in account, then click Refresh here.\r\n\r\nOpen the PyTorch guide for using your own Python environment?",
+                        "Benchmark help", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
                     if (choice == DialogResult.Yes)
                     {
                         try { OpenLink("https://pytorch.org/get-started/locally/"); }
@@ -1287,7 +1291,11 @@ namespace RtxSetup
             private void Display()
             {
                 var status = Measurement;
-                statusLabel.Text = status == null ? "Checking benchmark prerequisites..." : status.Message;
+                var pending = status == null ? null : Array.Find(status.Cards, card => card != null && !card.HasComparisonForBoot);
+                statusLabel.Text = status == null ? "Checking benchmark prerequisites..." :
+                    status.HasComparisonForBoot ? "Matched stock and unlocked comparisons are saved. Open the results folder to view the reports." :
+                    status.BootConfirmed && pending != null && !CanMeasure(status, "Unlocked", true) ? pending.Message ?? status.Message :
+                    status.Message;
                 pythonLabel.Text = status == null ? "Looking for CUDA-enabled Python..." :
                     !string.IsNullOrWhiteSpace(status.Python) ? "Python: " + status.Python :
                     status.CanProvision ? "Click Set up benchmarks to install a private benchmark environment." :

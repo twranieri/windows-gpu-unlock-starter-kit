@@ -1,3 +1,15 @@
+Starter Kit 0.4.0 desktop preview, build 12, 2026-11-10
+
+- Exercised the ordinary launcher and actual Explorer handoff on a signed-in
+  Windows desktop. Both kept the worker in the same standard user session,
+  handled Unicode paths, and preserved separate output and the exit code.
+- The read-only benchmark status check reported Ready on an RTX 3090 through
+  Explorer. The measurement fixtures covered the stock and unlocked phases;
+  the runtime fixtures and 54 Python benchmark/comparison tests passed.
+- An elevated Setup run and a physical before/after trial on the reported
+  HP RTX 3070 Ti are pending. The package uses the public Preview 11 EFI
+  and asset binaries unchanged.
+
 Starter Kit 0.4.0 desktop preview, build 11, 2026-11-10
 
 - Downloaded the pinned CPython archive and CUDA wheels, installed them in a

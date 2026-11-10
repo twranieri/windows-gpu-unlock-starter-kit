@@ -1,5 +1,10 @@
 # Changes
 
+## 0.4.0-preview.12 — 2026-11-10
+
+- Start tensor benchmarks through the signed-in user's File Explorer and verify that the worker uses the same account without administrator privileges. Both tests continue to use the same CUDA environment for matched comparisons.
+- Include Windows launch error codes when available in the benchmark diagnostic report.
+
 ## 0.4.0-preview.11 — 2026-11-10
 
 - Set up private Python, pip and CUDA PyTorch when automatic stock tests need a benchmark environment on a fresh Windows install.
