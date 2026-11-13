@@ -1,0 +1,17 @@
+RTX Tensor Benchmark 1.0.0
+
+1. Right-click the ZIP and choose Extract All. Open RTX Tensor Benchmark.exe
+   inside the extracted folder.
+2. Close games and GPU-heavy apps. Choose your NVIDIA GPU and click Run before.
+   The first run sets up CUDA Python automatically. It needs an internet
+   connection, about 2.6 GB of downloads, and 10 GiB free in your Windows
+   profile. Windows may ask to install Microsoft Visual C++ if it is missing.
+3. Return after the change you want to measure and click Run after. The app
+   remembers the before result for that card across restarts. Keep driver,
+   power limits and clock settings consistent across runs.
+4. Read the TFLOPS comparison. Use Open results to find the saved JSON files
+   and run logs. A failed run can be retried from the app.
+
+Requires 64-bit Windows 10 or 11 and one or two supported NVIDIA GPUs
+(RTX 30/40 series, driver 561.17 or newer). It measures one GPU at a time.
+The app measures the current GPU state and uses your before/after labels.
